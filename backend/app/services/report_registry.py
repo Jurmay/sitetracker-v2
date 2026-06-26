@@ -116,17 +116,22 @@ def _settlement_register(user_client, project_id):
 
 
 def _cashbook_report(user_client, project_id):
+    # BUG (caught via the same class of error as the ledger_report fix
+    # below): fund_receipts' timestamp column is received_at, not
+    # created_at like every other table this module queries - assumed
+    # from pattern-matching the other tables rather than checking this
+    # specific one's actual schema.
     result = (
         user_client.table("fund_receipts")
-        .select("created_at, amount, source, profiles(name)")
+        .select("received_at, amount, source, profiles(name)")
         .eq("project_id", project_id)
-        .order("created_at", desc=True)
+        .order("received_at", desc=True)
         .execute()
     )
     columns = ["Date", "Type", "Source / Description", "Recorded by", "Amount"]
     rows = [
         [
-            str(r["created_at"])[:10], "Receipt", r.get("source") or "",
+            str(r["received_at"])[:10], "Receipt", r.get("source") or "",
             (r.get("profiles") or {}).get("name", ""), f"{r['amount']:,.2f}",
         ]
         for r in result.data
@@ -216,12 +221,12 @@ def _ledger_report(user_client, project_id):
 
     receipts = (
         user_client.table("fund_receipts")
-        .select("created_at, amount, source")
+        .select("received_at, amount, source")
         .eq("project_id", project_id)
         .execute()
     )
     for r in receipts.data:
-        rows.append([str(r["created_at"])[:10], "Fund receipt", r.get("source") or "", f"+{r['amount']:,.2f}"])
+        rows.append([str(r["received_at"])[:10], "Fund receipt", r.get("source") or "", f"+{r['amount']:,.2f}"])
 
     advances = (
         user_client.table("advance_requisitions")
