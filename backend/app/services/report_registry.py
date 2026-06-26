@@ -159,6 +159,136 @@ def _labour_advance_ledger(user_client, project_id):
 # project_id; others only take project_id. NEEDS_DATE_RANGE tells the
 # endpoint (and the frontend) which is which, rather than guessing from
 # the function signature.
+def _labour_productivity_report(user_client, project_id, date_from, date_to):
+    """
+    Honest scope note: the schema attributes measured quantity to a BOQ
+    item per day (progress_reports), not to individual workers - there
+    is no data linking "worker X produced Y quantity" at the per-person
+    level (master_roll_attendance only records presence/absence, not
+    output). This report is therefore necessarily team-level: workers
+    present that day vs. total quantity measured that day, project-wide -
+    not a per-worker breakdown, since faking individual attribution from
+    data that doesn't support it would be actively misleading rather
+    than just incomplete.
+    """
+    attendance_result = (
+        user_client.table("master_roll_entries")
+        .select("date, master_roll_attendance(present)")
+        .eq("project_id", project_id)
+        .gte("date", date_from)
+        .lte("date", date_to)
+        .execute()
+    )
+    workers_by_date = {}
+    for entry in attendance_result.data:
+        present_count = sum(1 for a in entry.get("master_roll_attendance", []) if a.get("present"))
+        workers_by_date[entry["date"]] = workers_by_date.get(entry["date"], 0) + present_count
+
+    progress_result = (
+        user_client.table("v_progress_effective")
+        .select("date, effective_quantity")
+        .eq("project_id", project_id)
+        .gte("date", date_from)
+        .lte("date", date_to)
+        .execute()
+    )
+    quantity_by_date = {}
+    for r in progress_result.data:
+        quantity_by_date[r["date"]] = quantity_by_date.get(r["date"], 0) + r["effective_quantity"]
+
+    all_dates = sorted(set(workers_by_date) | set(quantity_by_date))
+    columns = ["Date", "Workers present", "Total measured quantity (all items)", "Output per worker"]
+    rows = []
+    for d in all_dates:
+        workers = workers_by_date.get(d, 0)
+        quantity = quantity_by_date.get(d, 0)
+        ratio = f"{(quantity / workers):.2f}" if workers else "N/A (no attendance recorded)"
+        rows.append([str(d), str(workers), f"{quantity:,.2f}", ratio])
+    return columns, rows
+
+
+def _ledger_report(user_client, project_id):
+    """
+    Combines fund receipts, advances, and settlements into one
+    chronological feed - per its name, "Ledger Report (combined)".
+    """
+    rows = []
+
+    receipts = (
+        user_client.table("fund_receipts")
+        .select("created_at, amount, source")
+        .eq("project_id", project_id)
+        .execute()
+    )
+    for r in receipts.data:
+        rows.append([str(r["created_at"])[:10], "Fund receipt", r.get("source") or "", f"+{r['amount']:,.2f}"])
+
+    advances = (
+        user_client.table("advance_requisitions")
+        .select("created_at, justification, amount, status")
+        .eq("project_id", project_id)
+        .execute()
+    )
+    for a in advances.data:
+        sign = "-" if a["status"] == "disbursed" else "(pending)"
+        rows.append([str(a["created_at"])[:10], "Advance", a["justification"], f"{sign}{a['amount']:,.2f}"])
+
+    settlements = (
+        user_client.table("advance_settlements")
+        .select("created_at, settled_amount, status, advance_requisitions(justification)")
+        .eq("project_id", project_id)
+        .execute()
+    )
+    for s in settlements.data:
+        desc = (s.get("advance_requisitions") or {}).get("justification", "")
+        rows.append([str(s["created_at"])[:10], "Settlement", f"Settling: {desc}", f"{s['settled_amount']:,.2f}"])
+
+    rows.sort(key=lambda r: r[0])
+    columns = ["Date", "Type", "Description", "Amount"]
+    return columns, rows
+
+
+def _project_financial_report(user_client, project_id):
+    """
+    A SUMMARY, not a transaction list - one labeled metric per row,
+    pulling from the EVM view (migration 006) and cashbook. Framed as
+    a 2-column "Metric / Value" table so the existing generic table
+    renderer (frontend + report_pdf.py) still applies without needing
+    a separate, second rendering path just for this one report.
+    """
+    evm_result = user_client.table("v_evm_by_project").select("*").eq("project_id", project_id).execute()
+    evm = evm_result.data[0] if evm_result.data else {}
+
+    receipts = user_client.table("fund_receipts").select("amount").eq("project_id", project_id).execute()
+    total_received = sum(r["amount"] for r in receipts.data)
+
+    disbursed = (
+        user_client.table("advance_requisitions")
+        .select("amount")
+        .eq("project_id", project_id)
+        .eq("status", "disbursed")
+        .execute()
+    )
+    total_disbursed = sum(a["amount"] for a in disbursed.data)
+    cash_balance = total_received - total_disbursed
+
+    columns = ["Metric", "Value"]
+    rows = [
+        ["Total budgeted cost", f"{evm.get('total_budgeted_cost', 0):,.2f}"],
+        ["Planned value (to date)", f"{evm.get('total_planned_value', 0):,.2f}"],
+        ["Earned value (to date)", f"{evm.get('total_earned_value', 0):,.2f}"],
+        ["Actual cost (to date)", f"{evm.get('total_actual_cost', 0):,.2f}"],
+        ["Cost variance", f"{evm.get('cost_variance', 0):,.2f}"],
+        ["Schedule variance", f"{evm.get('schedule_variance', 0):,.2f}"],
+        ["Physical progress", f"{evm.get('physical_progress_pct', 0):.1f}%"],
+        ["Financial progress", f"{evm.get('financial_progress_pct', 0):.1f}%"],
+        ["Total fund received", f"{total_received:,.2f}"],
+        ["Total disbursed", f"{total_disbursed:,.2f}"],
+        ["Current cash balance", f"{cash_balance:,.2f}"],
+    ]
+    return columns, rows
+
+
 REPORT_REGISTRY = {
     "daily_progress_report": _progress_report,
     "weekly_progress_report": _progress_report,
@@ -169,9 +299,15 @@ REPORT_REGISTRY = {
     "settlement_register": _settlement_register,
     "cashbook_report": _cashbook_report,
     "labour_advance_ledger": _labour_advance_ledger,
+    "labour_productivity_report": _labour_productivity_report,
+    "ledger_report": _ledger_report,
+    "project_financial_report": _project_financial_report,
 }
 
-NEEDS_DATE_RANGE = {"daily_progress_report", "weekly_progress_report", "monthly_progress_report", "master_roll_report"}
+NEEDS_DATE_RANGE = {
+    "daily_progress_report", "weekly_progress_report", "monthly_progress_report",
+    "master_roll_report", "labour_productivity_report",
+}
 
 REPORT_TITLES = {
     "daily_progress_report": "Daily Progress Report",
@@ -183,4 +319,7 @@ REPORT_TITLES = {
     "settlement_register": "Settlement Register",
     "cashbook_report": "Cashbook Report",
     "labour_advance_ledger": "Labour Advance Ledger",
+    "labour_productivity_report": "Labour Productivity Report",
+    "ledger_report": "Ledger Report (Combined)",
+    "project_financial_report": "Project Financial Report",
 }
