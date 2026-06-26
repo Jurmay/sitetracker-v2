@@ -6,3 +6,4 @@ supabase==2.31.0
 python-dotenv==1.2.2
 reportlab==5.0.0
 resend==2.32.2
+email-validator==2.3.0

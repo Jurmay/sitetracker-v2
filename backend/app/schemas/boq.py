@@ -34,6 +34,12 @@ class BOQSectionOut(BaseModel):
     sort_order: int
 
 
+class BOQSectionCreate(BaseModel):
+    project_id: UUID
+    name: str
+    sort_order: int = 0
+
+
 class BOQItemOut(BaseModel):
     id: UUID
     section_id: UUID

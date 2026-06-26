@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
-from app.schemas.boq import BOQSectionOut, BOQItemOut, BOQItemCreate, BOQVariationCreate
+from app.schemas.boq import BOQSectionOut, BOQSectionCreate, BOQItemOut, BOQItemCreate, BOQVariationCreate
 
 router = APIRouter()
 
@@ -18,6 +18,20 @@ def list_sections(project_id: str, user: CurrentUser = Depends(get_current_user)
         .execute()
     )
     return result.data
+
+
+@router.post("/sections", response_model=BOQSectionOut)
+def create_section(payload: BOQSectionCreate, user: CurrentUser = Depends(get_current_user)):
+    """
+    RLS (boq_sections_write_admin / boq_sections_write_owner) restricts
+    this to Admin/Company Owner, same pattern as create_item below.
+    """
+    result = user.client.table("boq_sections").insert(
+        payload.model_dump(mode="json")
+    ).execute()
+    if not result.data:
+        raise HTTPException(status_code=403, detail="Not permitted to add BOQ sections to this project.")
+    return result.data[0]
 
 
 @router.get("/items", response_model=List[BOQItemOut])
