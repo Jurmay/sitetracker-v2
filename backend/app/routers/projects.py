@@ -32,14 +32,30 @@ def get_project(project_id: str, user: CurrentUser = Depends(get_current_user)):
     return result.data[0]
 
 
-@router.post("", response_model=ProjectOut)
-def create_project(payload: ProjectCreate, user: CurrentUser = Depends(get_current_user)):
+@router.get("/{project_id}/my-role")
+def get_my_role(project_id: str, user: CurrentUser = Depends(get_current_user)):
     """
-    RLS (projects_insert_owner policy) requires the caller to be a
-    company_owner of the target company - a non-owner's insert attempt
-    is rejected by Postgres itself, not just hidden by application logic.
+    Returns the calling user's active role(s) on this project. Added
+    during Financial-screens frontend work: there was no existing way
+    for the frontend to know whether to show a Site Coordinator view,
+    a Cashier view, an Admin view, etc. - a real gap, not present in
+    any router until now.
+
+    A user could theoretically hold more than one role on the same
+    project (the schema's unique constraint is on (project_id, user_id,
+    role), not (project_id, user_id) alone) - returns a list rather than
+    assuming exactly one, so the frontend can handle that case rather
+    than silently picking one role role arbitrarily.
     """
-    result = user.client.table("projects").insert(payload.model_dump(mode="json")).execute()
-    if not result.data:
-        raise HTTPException(status_code=403, detail="Not permitted to create a project for this company.")
-    return result.data[0]
+    result = (
+        user.client.table("project_roles")
+        .select("role")
+        .eq("project_id", project_id)
+        .eq("user_id", user.id)
+        .eq("status", "active")
+        .execute()
+    )
+    roles = [row["role"] for row in result.data]
+    if not roles:
+        raise HTTPException(status_code=404, detail="You have no active role on this project.")
+    return {"roles": roles}
