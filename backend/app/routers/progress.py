@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
+from app.core.db_helpers import safe_execute
 from app.schemas.progress import (
     ProgressReportOut, ProgressReportCreate, ProgressCorrectionOut, ProgressCorrectionCreate,
 )
@@ -39,16 +40,14 @@ def submit_progress_report(
     """
     data = payload.model_dump(mode="json", exclude_none=True)
     data["coordinator_id"] = user.id
-    result = user.client.table("progress_reports").insert(data).execute()
+    denial_msg = (
+        "Could not submit progress report. This can mean: you are not assigned "
+        "to this BOQ item's scope, the measured quantity is less than a previous "
+        "cumulative entry, or you do not have Site Coordinator access on this project."
+    )
+    result = safe_execute(user.client.table("progress_reports").insert(data), on_denied=denial_msg)
     if not result.data:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Could not submit progress report. This can mean: you are not assigned "
-                "to this BOQ item's scope, the measured quantity is less than a previous "
-                "cumulative entry, or you do not have Site Coordinator access on this project."
-            ),
-        )
+        raise HTTPException(status_code=403, detail=denial_msg)
     return result.data[0]
 
 
@@ -83,7 +82,10 @@ def correct_progress_report(
         "reason": payload.reason,
         "corrected_by": user.id,
     }
-    result = user.client.table("progress_corrections").insert(correction_data).execute()
+    result = safe_execute(
+        user.client.table("progress_corrections").insert(correction_data),
+        on_denied="Not permitted to correct progress reports on this project (Admin/Company Owner only).",
+    )
     if not result.data:
         raise HTTPException(
             status_code=403,

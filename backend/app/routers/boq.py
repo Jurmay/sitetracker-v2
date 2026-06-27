@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
-from app.schemas.boq import BOQSectionOut, BOQItemOut, BOQItemCreate, BOQVariationCreate
+from app.core.db_helpers import safe_execute
+from app.schemas.boq import BOQSectionOut, BOQSectionCreate, BOQItemOut, BOQItemCreate, BOQVariationCreate
 
 router = APIRouter()
 
@@ -18,6 +19,21 @@ def list_sections(project_id: str, user: CurrentUser = Depends(get_current_user)
         .execute()
     )
     return result.data
+
+
+@router.post("/sections", response_model=BOQSectionOut)
+def create_section(payload: BOQSectionCreate, user: CurrentUser = Depends(get_current_user)):
+    """
+    RLS (boq_sections_write_admin / boq_sections_write_owner) restricts
+    this to Admin/Company Owner, same pattern as create_item below.
+    """
+    result = safe_execute(
+        user.client.table("boq_sections").insert(payload.model_dump(mode="json")),
+        on_denied="Not permitted to add BOQ sections to this project.",
+    )
+    if not result.data:
+        raise HTTPException(status_code=403, detail="Not permitted to add BOQ sections to this project.")
+    return result.data[0]
 
 
 @router.get("/items", response_model=List[BOQItemOut])
@@ -44,9 +60,10 @@ def create_item(payload: BOQItemCreate, user: CurrentUser = Depends(get_current_
     column (quantity * rate), computed by Postgres itself, never sent
     by the client.
     """
-    result = user.client.table("boq_items").insert(
-        payload.model_dump(mode="json", exclude_none=True)
-    ).execute()
+    result = safe_execute(
+        user.client.table("boq_items").insert(payload.model_dump(mode="json", exclude_none=True)),
+        on_denied="Not permitted to add BOQ items to this project.",
+    )
     if not result.data:
         raise HTTPException(status_code=403, detail="Not permitted to add BOQ items to this project.")
     return result.data[0]
@@ -59,9 +76,10 @@ def create_variation(payload: BOQVariationCreate, user: CurrentUser = Depends(ge
     policy on boq_variations) - this endpoint only ever inserts, and there
     is intentionally no corresponding PUT/DELETE route.
     """
-    result = user.client.table("boq_variations").insert(
-        {**payload.model_dump(mode="json"), "created_by": user.id}
-    ).execute()
+    result = safe_execute(
+        user.client.table("boq_variations").insert({**payload.model_dump(mode="json"), "created_by": user.id}),
+        on_denied="Not permitted to record a variation on this BOQ item.",
+    )
     if not result.data:
         raise HTTPException(status_code=403, detail="Not permitted to record a variation on this BOQ item.")
     return result.data[0]

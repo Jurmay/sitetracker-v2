@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
+from app.core.db_helpers import safe_execute
 from app.schemas.master_roll import (
     LabourerOut, LabourerCreate, MasterRollEntryOut, MasterRollEntryCreate,
 )
@@ -36,7 +37,10 @@ def register_labourer(payload: LabourerCreate, user: CurrentUser = Depends(get_c
     """
     data = payload.model_dump(mode="json", exclude_none=True)
     data["created_by"] = user.id
-    result = user.client.table("labourers").insert(data).execute()
+    result = safe_execute(
+        user.client.table("labourers").insert(data),
+        on_denied="Not permitted to register a labourer on this project.",
+    )
     if not result.data:
         raise HTTPException(
             status_code=403,
@@ -84,7 +88,12 @@ def submit_master_roll(payload: MasterRollEntryCreate, user: CurrentUser = Depen
         "is_no_work_day": payload.is_no_work_day,
         "no_work_remarks": payload.no_work_remarks,
     }
-    entry_result = user.client.table("master_roll_entries").insert(entry_data).execute()
+    entry_result = safe_execute(
+        user.client.table("master_roll_entries").insert(entry_data),
+        on_denied="Not permitted to submit a master roll entry for this project/date "
+                  "(only an active Site Coordinator can submit a master roll, and only "
+                  "one entry per date is allowed).",
+    )
     if not entry_result.data:
         raise HTTPException(
             status_code=403,
@@ -99,8 +108,12 @@ def submit_master_roll(payload: MasterRollEntryCreate, user: CurrentUser = Depen
             {"entry_id": entry["id"], "labourer_id": str(row.labourer_id), "present": row.present}
             for row in payload.attendance
         ]
-        attendance_result = (
-            user.client.table("master_roll_attendance").insert(attendance_rows).execute()
+        attendance_result = safe_execute(
+            user.client.table("master_roll_attendance").insert(attendance_rows),
+            on_denied=(
+                f"Master roll entry {entry['id']} was created, but you are not permitted "
+                "to record attendance for one or more of these workers."
+            ),
         )
         if not attendance_result.data or len(attendance_result.data) != len(attendance_rows):
             raise HTTPException(

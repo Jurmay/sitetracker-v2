@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
+from postgrest.exceptions import APIError
 
 from app.core.deps import get_current_user, CurrentUser
+from app.core.db_helpers import safe_execute
 from app.schemas.financial import (
     SubcontractOut, SubcontractCreate, SubcontractBalanceOut,
     AdvanceRequisitionOut, AdvanceRequisitionCreate, RequisitionActionCreate,
@@ -27,7 +29,10 @@ def list_subcontracts(project_id: str, user: CurrentUser = Depends(get_current_u
 def create_subcontract(payload: SubcontractCreate, user: CurrentUser = Depends(get_current_user)):
     data = payload.model_dump(mode="json")
     data["created_by"] = user.id
-    result = user.client.table("subcontracts").insert(data).execute()
+    result = safe_execute(
+        user.client.table("subcontracts").insert(data),
+        on_denied="Not permitted to create a subcontract on this project.",
+    )
     if not result.data:
         raise HTTPException(status_code=403, detail="Not permitted to create a subcontract on this project.")
     return result.data[0]
@@ -69,16 +74,14 @@ def list_advances(project_id: str, user: CurrentUser = Depends(get_current_user)
 def create_advance(payload: AdvanceRequisitionCreate, user: CurrentUser = Depends(get_current_user)):
     data = payload.model_dump(mode="json", exclude_none=True)
     data["requested_by"] = user.id
-    result = user.client.table("advance_requisitions").insert(data).execute()
+    denial_msg = (
+        "Could not submit advance requisition. Check: you are an active Site "
+        "Coordinator on this project, and that neither lock (missing Master Roll "
+        "or overdue settlement) is currently active for you."
+    )
+    result = safe_execute(user.client.table("advance_requisitions").insert(data), on_denied=denial_msg)
     if not result.data:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Could not submit advance requisition. Check: you are an active Site "
-                "Coordinator on this project, and that neither lock (missing Master Roll "
-                "or overdue settlement) is currently active for you."
-            ),
-        )
+        raise HTTPException(status_code=403, detail=denial_msg)
     return result.data[0]
 
 
@@ -93,16 +96,14 @@ def _insert_requisition_action(requisition_id: str, action_type: str, remarks: s
     data = {"requisition_id": requisition_id, "action_by": user.id, "action_type": action_type}
     if remarks:
         data["remarks"] = remarks
-    result = user.client.table("advance_requisition_actions").insert(data).execute()
+    denial_msg = (
+        f"Not permitted to '{action_type}' this requisition. This can mean: wrong "
+        "role for this action, the requisition is not currently in the right status "
+        "for this action, or (for rejection) a remark was required but missing."
+    )
+    result = safe_execute(user.client.table("advance_requisition_actions").insert(data), on_denied=denial_msg)
     if not result.data:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Not permitted to '{action_type}' this requisition. This can mean: wrong "
-                "role for this action, the requisition is not currently in the right status "
-                "for this action, or (for rejection) a remark was required but missing."
-            ),
-        )
+        raise HTTPException(status_code=403, detail=denial_msg)
     return result.data[0]
 
 
@@ -168,11 +169,20 @@ def submit_settlement(payload: AdvanceSettlementCreate, user: CurrentUser = Depe
     data["submitted_by"] = user.id
     try:
         result = user.client.table("advance_settlements").insert(data).execute()
-    except Exception as e:
-        # The trigger's raise exception surfaces here as a client-side
-        # exception, not as an empty result - must be caught separately
-        # from the RLS-denial case below, which returns cleanly with no rows.
-        raise HTTPException(status_code=400, detail=f"Settlement rejected: {e}")
+    except APIError as e:
+        # Two genuinely different failure shapes share this except block,
+        # both raised as exceptions by postgrest-py (neither comes back
+        # as an empty .data): an RLS denial (code 42501, e.g. not the
+        # original requester) is a permissions issue (403); the
+        # over-settlement trigger raising its own exception is a business-
+        # rule rejection (400) whose message is already specific and
+        # worth showing as-is.
+        if e.code == "42501":
+            raise HTTPException(
+                status_code=403,
+                detail="Not permitted to submit a settlement for this requisition (must be the original requester).",
+            )
+        raise HTTPException(status_code=400, detail=f"Settlement rejected: {e.message}")
 
     if not result.data:
         raise HTTPException(
@@ -191,7 +201,10 @@ def verify_settlement(settlement_id: str, payload: SettlementActionCreate, user:
     there is no separate "post to ledger" step to call here).
     """
     data = {"settlement_id": settlement_id, "action_by": user.id, "action_type": "verified"}
-    result = user.client.table("advance_settlement_actions").insert(data).execute()
+    result = safe_execute(
+        user.client.table("advance_settlement_actions").insert(data),
+        on_denied="Not permitted to verify this settlement.",
+    )
     if not result.data:
         raise HTTPException(status_code=403, detail="Not permitted to verify this settlement.")
     return result.data[0]
@@ -202,7 +215,10 @@ def reject_settlement(settlement_id: str, payload: SettlementActionCreate, user:
     if not payload.remarks or not payload.remarks.strip():
         raise HTTPException(status_code=422, detail="A remark is required when rejecting a settlement.")
     data = {"settlement_id": settlement_id, "action_by": user.id, "action_type": "rejected", "remarks": payload.remarks}
-    result = user.client.table("advance_settlement_actions").insert(data).execute()
+    result = safe_execute(
+        user.client.table("advance_settlement_actions").insert(data),
+        on_denied="Not permitted to reject this settlement.",
+    )
     if not result.data:
         raise HTTPException(status_code=403, detail="Not permitted to reject this settlement.")
     return result.data[0]
@@ -236,7 +252,10 @@ def create_fund_requisition(payload: FundRequisitionCreate, user: CurrentUser = 
     """Cashier only (RLS freq_insert_cashier)."""
     data = payload.model_dump(mode="json")
     data["requested_by"] = user.id
-    result = user.client.table("fund_requisitions").insert(data).execute()
+    result = safe_execute(
+        user.client.table("fund_requisitions").insert(data),
+        on_denied="Not permitted to raise a fund requisition (Cashier only).",
+    )
     if not result.data:
         raise HTTPException(status_code=403, detail="Not permitted to raise a fund requisition (Cashier only).")
     return result.data[0]
@@ -316,11 +335,11 @@ def approve_fund_requisition(fund_requisition_id: str, user: CurrentUser = Depen
 
     # 3. Approve the requisition.
     now = datetime.now(timezone.utc)
-    approve_result = (
+    approve_result = safe_execute(
         user.client.table("fund_requisitions")
         .update({"status": "approved", "approved_by": user.id, "approved_at": now.isoformat()})
-        .eq("id", fund_requisition_id)
-        .execute()
+        .eq("id", fund_requisition_id),
+        on_denied="Not permitted to approve this fund requisition.",
     )
     if not approve_result.data:
         raise HTTPException(status_code=403, detail="Not permitted to approve this fund requisition.")

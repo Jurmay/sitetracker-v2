@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
+from app.core.db_helpers import safe_execute
 from app.schemas.dashboard import (
     ProjectEvmOut, BoqItemEvmOut, ReportPermissionOut, ReportPermissionUpdate,
 )
@@ -137,13 +138,13 @@ def update_report_permission(
     if not report_def.data:
         raise HTTPException(status_code=404, detail=f"Unknown report key: {payload.report_definition_key}")
 
-    result = (
+    result = safe_execute(
         user.client.table("user_report_permissions")
         .update({"granted": payload.granted, "granted_by": user.id})
         .eq("project_id", project_id)
         .eq("user_id", str(payload.user_id))
-        .eq("report_definition_id", report_def.data[0]["id"])
-        .execute()
+        .eq("report_definition_id", report_def.data[0]["id"]),
+        on_denied="Not permitted to change this user's report permissions on this project.",
     )
     if not result.data:
         raise HTTPException(
