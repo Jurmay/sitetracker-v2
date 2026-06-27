@@ -27,7 +27,7 @@ def create_section(payload: BOQSectionCreate, user: CurrentUser = Depends(get_cu
     RLS (boq_sections_write_admin / boq_sections_write_owner) restricts
     this to Admin/Company Owner, same pattern as create_item below.
     """
-result = safe_execute(
+    result = safe_execute(
         user.client.table("boq_sections").insert(payload.model_dump(mode="json")),
         on_denied="Not permitted to add BOQ sections to this project.",
     )
