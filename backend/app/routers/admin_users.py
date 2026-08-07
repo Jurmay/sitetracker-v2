@@ -57,6 +57,11 @@ class InviteUserPayload(BaseModel):
     role: str
 
 
+class ResetPasswordPayload(BaseModel):
+    project_id: str
+    email: EmailStr
+
+
 @router.post("/assign-role")
 def assign_role(payload: AssignRolePayload, user: CurrentUser = Depends(get_current_user)):
     """
@@ -147,3 +152,37 @@ def invite_user(payload: InviteUserPayload, user: CurrentUser = Depends(get_curr
         .execute()
     )
     return result.data[0] if result.data else {"status": "invited"}
+
+
+@router.post("/reset-password")
+def reset_password(payload: ResetPasswordPayload, user: CurrentUser = Depends(get_current_user)):
+    """
+    Triggers Supabase's own password-recovery email for an EXISTING
+    user - the same flow as clicking "Send password recovery" in the
+    Supabase Studio dashboard. Deliberately does NOT set a password
+    directly: an admin choosing (and knowing) another person's password
+    is worse practice than letting that person set their own via a
+    time-limited link, and this way there's no plaintext password ever
+    passed through this API or shown in this UI.
+
+    project_id is required only to prove the caller is an admin/owner
+    ON THAT PROJECT - it is not otherwise used, since password reset is
+    a property of the Supabase Auth account, not of any one project.
+    """
+    _require_admin_or_owner(user, payload.project_id)
+
+    service_db = get_service_db()
+
+    profile = service_db.table("profiles").select("id").eq("email", payload.email).execute()
+    if not profile.data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No existing account found for {payload.email}. Use 'Invite new user' instead.",
+        )
+
+    try:
+        service_db.auth.reset_password_for_email(payload.email)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to send reset email: {e}")
+
+    return {"status": "reset_email_sent", "email": payload.email}
