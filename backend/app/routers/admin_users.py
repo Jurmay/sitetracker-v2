@@ -186,3 +186,60 @@ def reset_password(payload: ResetPasswordPayload, user: CurrentUser = Depends(ge
         raise HTTPException(status_code=502, detail=f"Failed to send reset email: {e}")
 
     return {"status": "reset_email_sent", "email": payload.email}
+
+
+class LookupPayload(BaseModel):
+    project_id: str
+    email: EmailStr
+
+
+@router.post("/lookup")
+def lookup_user(payload: LookupPayload, user: CurrentUser = Depends(get_current_user)):
+    """
+    Resolves an email address to a user_id + name + their role(s) on this
+    project, so the Admin UI can find someone by email instead of requiring
+    a raw UUID copied out of the Supabase dashboard.
+
+    Admin/Owner only - same guard as every other endpoint in this router,
+    since this reveals whether a given email has an account at all.
+    """
+    _require_admin_or_owner(user, payload.project_id)
+
+    service_db = get_service_db()
+
+    profile = (
+        service_db.table("profiles")
+        .select("id, name, email")
+        .eq("email", payload.email)
+        .execute()
+    )
+    if not profile.data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No account found for {payload.email}.",
+        )
+
+    found = profile.data[0]
+
+    roles_result = (
+        service_db.table("project_roles")
+        .select("role, status")
+        .eq("project_id", payload.project_id)
+        .eq("user_id", found["id"])
+        .eq("status", "active")
+        .execute()
+    )
+    roles = [r["role"] for r in roles_result.data]
+
+    if not roles:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{payload.email} has an account but no active role on this project. Assign a role first.",
+        )
+
+    return {
+        "user_id": found["id"],
+        "name": found["name"],
+        "email": found["email"],
+        "roles": roles,
+    }
