@@ -74,37 +74,60 @@ def list_advances(project_id: str, user: CurrentUser = Depends(get_current_user)
 def create_advance(payload: AdvanceRequisitionCreate, user: CurrentUser = Depends(get_current_user)):
     data = payload.model_dump(mode="json", exclude_none=True)
     data["requested_by"] = user.id
-    denial_msg = (
-        "Could not submit advance requisition. Check: you are an active Site "
-        "Coordinator on this project, and that neither lock (missing Master Roll "
-        "or overdue settlement) is currently active for you."
-    )
-    result = safe_execute(user.client.table("advance_requisitions").insert(data), on_denied=denial_msg)
-    if not result.data:
-        raise HTTPException(status_code=403, detail=denial_msg)
-    return result.data[0]
 
-
-def _insert_requisition_action(requisition_id: str, action_type: str, remarks: str | None, user: CurrentUser):
-    """
-    Shared helper for the four role-specific action endpoints below.
-    action_type is always set by the calling endpoint, never by request
-    body, so the API shape itself prevents a role from even attempting
-    an action outside its lane - RLS (migration 005) is the authoritative
-    enforcement, this is a defense-in-depth second layer.
-    """
-    data = {"requisition_id": requisition_id, "action_by": user.id, "action_type": action_type}
-    if remarks:
-        data["remarks"] = remarks
-    denial_msg = (
-        f"Not permitted to '{action_type}' this requisition. This can mean: wrong "
-        "role for this action, the requisition is not currently in the right status "
-        "for this action, or (for rejection) a remark was required but missing."
+    generic_msg = (
+        "Could not submit advance requisition. You must be an active Site "
+        "Coordinator on this project."
     )
-    result = safe_execute(user.client.table("advance_requisition_actions").insert(data), on_denied=denial_msg)
-    if not result.data:
-        raise HTTPException(status_code=403, detail=denial_msg)
-    return result.data[0]
+    result = safe_execute(
+        user.client.table("advance_requisitions").insert(data),
+        on_denied=generic_msg,
+    )
+    if result.data:
+        return result.data[0]
+
+    # The insert was denied by the RLS policy. Work out WHICH of the three
+    # locks is active so we can tell the coordinator exactly what to fix,
+    # instead of a vague catch-all. These are the same functions the policy
+    # itself calls (fn_is_*_locked), so the answer here matches the real
+    # reason the insert failed.
+    #
+    # Each returns a single boolean. We surface the first active lock with
+    # a concrete, actionable instruction. If somehow none report active
+    # (e.g. a role/permission issue rather than a lock), fall back to the
+    # generic message.
+    def _lock_active(fn_name: str) -> bool:
+        try:
+            res = user.client.rpc(
+                fn_name,
+                {"p_coordinator_id": user.id, "p_project_id": data["project_id"]},
+            ).execute()
+            return bool(res.data)
+        except Exception:
+            # If the check itself fails, don't block the error path - just
+            # treat it as "unknown" and let the generic message stand.
+            return False
+
+    if _lock_active("fn_is_master_roll_locked"):
+        detail = (
+            "Blocked: today's Master Roll has not been submitted. Submit "
+            "today's Master Roll first, then raise this advance."
+        )
+    elif _lock_active("fn_is_progress_report_locked"):
+        detail = (
+            "Blocked: today's Progress Report has not been submitted. Submit "
+            "today's Progress Report first, then raise this advance."
+        )
+    elif _lock_active("fn_is_settlement_locked"):
+        detail = (
+            "Blocked: you have an advance that is past its settlement grace "
+            "period and not yet fully settled. Settle the overdue advance "
+            "first, then raise this one."
+        )
+    else:
+        detail = generic_msg
+
+    raise HTTPException(status_code=403, detail=detail)
 
 
 @router.post("/advances/{requisition_id}/verify")
