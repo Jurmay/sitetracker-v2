@@ -147,21 +147,15 @@ def list_settlements(project_id: str, user: CurrentUser = Depends(get_current_us
     """
     Returns settlements with their review remarks folded in.
 
-    The Cashier's note (on verify) and reason (on reject) are stored in
-    advance_settlement_actions, not on the settlement row itself - so a
-    plain select on advance_settlements returned no way for the
-    coordinator to see WHY something was rejected, or any note attached
-    to a verification. We embed the actions and flatten the most recent
-    one onto the response.
-
-    No response_model here deliberately: AdvanceSettlementOut has no slot
-    for the derived cashier_note / rejection_reason fields, and adding
-    them to that schema would imply they are real columns on the table,
-    which they are not.
+    advance_settlement_actions has no timestamp column, so we do not sort
+    by recency - settlement review is a single-step, terminal action per
+    settlement, so at most one verified/rejected action is expected. If
+    both were somehow present, rejection is treated as authoritative
+    since it is the more consequential state.
     """
     result = (
         user.client.table("advance_settlements")
-        .select("*, advance_settlement_actions(action_type, remarks, created_at)")
+        .select("*, advance_settlement_actions(action_type, remarks)")
         .eq("project_id", project_id)
         .execute()
     )
@@ -169,17 +163,12 @@ def list_settlements(project_id: str, user: CurrentUser = Depends(get_current_us
     settlements = []
     for row in result.data:
         actions = row.pop("advance_settlement_actions", []) or []
-        # Most recent action decides what the coordinator sees.
-        actions_sorted = sorted(actions, key=lambda a: a.get("created_at") or "", reverse=True)
-        latest = actions_sorted[0] if actions_sorted else None
 
-        row["cashier_note"] = None
-        row["rejection_reason"] = None
-        if latest and latest.get("remarks"):
-            if latest.get("action_type") == "rejected":
-                row["rejection_reason"] = latest["remarks"]
-            elif latest.get("action_type") == "verified":
-                row["cashier_note"] = latest["remarks"]
+        rejected = next((a for a in actions if a.get("action_type") == "rejected"), None)
+        verified = next((a for a in actions if a.get("action_type") == "verified"), None)
+
+        row["rejection_reason"] = rejected["remarks"] if rejected and rejected.get("remarks") else None
+        row["cashier_note"] = verified["remarks"] if verified and verified.get("remarks") else None
 
         settlements.append(row)
 
