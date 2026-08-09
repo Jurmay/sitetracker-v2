@@ -96,12 +96,14 @@ class AdvanceSettlementOut(BaseModel):
     submitted_by: UUID
     settled_amount: float
     status: str
+    receipt_url: Optional[str] = None
 
 
 class AdvanceSettlementCreate(BaseModel):
     requisition_id: UUID
     project_id: UUID
     settled_amount: float = Field(gt=0)
+    receipt_url: Optional[str] = None
 
 
 class SettlementActionCreate(BaseModel):
