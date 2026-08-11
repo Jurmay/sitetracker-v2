@@ -130,6 +130,27 @@ def create_advance(payload: AdvanceRequisitionCreate, user: CurrentUser = Depend
     raise HTTPException(status_code=403, detail=detail)
 
 
+def _insert_requisition_action(requisition_id: str, action_type: str, remarks: str | None, user: CurrentUser):
+    """
+    Shared helper for the four role-specific action endpoints below.
+    action_type is always set by the calling endpoint, never by request
+    body, so the API shape itself prevents a role from even attempting
+    an action outside its lane - RLS (migration 005) is the authoritative
+    enforcement, this is a defense-in-depth second layer.
+    """
+    data = {"requisition_id": requisition_id, "action_by": user.id, "action_type": action_type}
+    if remarks:
+        data["remarks"] = remarks
+    denial_msg = (
+        f"Not permitted to '{action_type}' this requisition. This can mean: wrong "
+        "role for this action, the requisition is not currently in the right status "
+        "for this action, or (for rejection) a remark was required but missing."
+    )
+    result = safe_execute(user.client.table("advance_requisition_actions").insert(data), on_denied=denial_msg)
+    if not result.data:
+        raise HTTPException(status_code=403, detail=denial_msg)
+    return result.data[0]
+
 @router.post("/advances/{requisition_id}/verify")
 def verify_advance(requisition_id: str, payload: RequisitionActionCreate, user: CurrentUser = Depends(get_current_user)):
     """Cashier only. First step: pending_verification -> pending_approval."""
