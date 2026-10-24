@@ -5,7 +5,7 @@ from typing import List
 from app.core.deps import get_current_user, CurrentUser
 from app.core.db_helpers import safe_execute
 from app.schemas.dashboard import (
-    ProjectEvmOut, BoqItemEvmOut, ReportPermissionOut, ReportPermissionUpdate,
+    ProjectEvmOut, BoqItemEvmOut, PortfolioProjectOut, ReportPermissionOut, ReportPermissionUpdate,
 )
 
 router = APIRouter()
@@ -53,6 +53,18 @@ def get_boq_item_evm(project_id: str, user: CurrentUser = Depends(get_current_us
         .eq("project_id", project_id)
         .execute()
     )
+    return result.data
+
+
+@router.get("/portfolio", response_model=List[PortfolioProjectOut])
+def get_portfolio(user: CurrentUser = Depends(get_current_user)):
+    """
+    Owner dashboard across all sites: one row per project where the caller
+    is Company Owner or Admin (v_portfolio_summary filters this itself).
+    Any other role gets an empty list, which the frontend reads as "show
+    the plain project picker".
+    """
+    result = user.client.table("v_portfolio_summary").select("*").order("name").execute()
     return result.data
 
 

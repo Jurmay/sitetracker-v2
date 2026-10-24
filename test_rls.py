@@ -171,7 +171,7 @@ VIEWS_WITH_PROJECT_ID = [
     "v_evm_by_project", "v_evm_by_boq_item", "v_cashbook_running_balance",
     "v_progress_effective", "v_subcontract_balances",
 ]
-ALL_VIEWS = VIEWS_WITH_PROJECT_ID + ["v_actual_cost_by_boq_item"]
+ALL_VIEWS = VIEWS_WITH_PROJECT_ID + ["v_actual_cost_by_boq_item", "v_portfolio_summary"]
 
 
 def run_view_checks(slug: str, role: str):
@@ -191,6 +191,19 @@ def run_view_checks(slug: str, role: str):
         check(f"{role}@{slug}: cannot write through v_progress_effective", len(res.data) == 0)
     except Exception:
         check(f"{role}@{slug}: cannot write through v_progress_effective", True)
+
+
+def run_portfolio_checks(slug: str, role: str):
+    """The all-sites owner dashboard: owners and admins see their own sites only;
+    every other role sees nothing."""
+    client = login_as(f"{slug}.{role}@seedtest.local")
+    own_project_id = get_project_id(client, slug)
+    rows = client.table("v_portfolio_summary").select("project_id").execute().data
+    if role in ("owner", "admin"):
+        check(f"{role}@{slug}: portfolio shows exactly own site",
+              [r["project_id"] for r in rows] == [own_project_id])
+    else:
+        check(f"{role}@{slug}: portfolio is empty for this role", len(rows) == 0)
 
 
 def run_anonymous_checks():
@@ -261,6 +274,8 @@ if __name__ == "__main__":
     for role in ["owner", "admin", "coordinator", "cashier", "viewer"]:
         run_view_checks("alpha", role)
         run_view_checks("beta", role)
+        run_portfolio_checks("alpha", role)
+        run_portfolio_checks("beta", role)
 
     run_anonymous_checks()
     run_receipt_checks()

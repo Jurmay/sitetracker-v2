@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-from typing import Optional
+from datetime import date
+from typing import List, Optional
 from uuid import UUID
 from pydantic import BaseModel
 
@@ -31,6 +32,42 @@ class BoqItemEvmOut(BaseModel):
     earned_value: float
     actual_cost: float
     cumulative_measured_quantity: float
+
+
+class PortfolioProjectOut(BaseModel):
+    """Maps to v_portfolio_summary - one row per site for the owner dashboard."""
+    project_id: UUID
+    name: str
+    location: Optional[str] = None
+    status: str
+    target_end_date: Optional[date] = None
+    total_budgeted_cost: float
+    planned_value: float
+    earned_value: float
+    actual_cost: float
+    cost_variance: float
+    schedule_variance: float
+    physical_progress_pct: float
+    financial_progress_pct: float
+    items_exceeding_boq_estimate: int
+    total_fund_receipts: float
+    total_disbursed: float
+    cash_balance: float
+    cash_balance_pct: float
+    cash_replenishment_threshold_pct: float
+    cash_low: bool
+    advances_pending_verification: int
+    advances_pending_approval: int
+    advances_awaiting_disbursement: int
+    settlements_pending_verification: int
+    fund_requisitions_pending: int
+    advances_outstanding_amount: float
+    settlements_overdue: int
+    coordinators_on_duty: int
+    master_roll_submitted_today: int
+    progress_submitted_today: int
+    coordinators_missing_today: List[str]
+    last_progress_date: Optional[date] = None
 
 
 class ReportPermissionOut(BaseModel):
