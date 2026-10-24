@@ -9,7 +9,9 @@ this app has produced so far), so reports look like they belong to the
 same product rather than introducing a second, divergent style.
 """
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+BHUTAN_TIME = timezone(timedelta(hours=6), "BTT")  # no daylight saving
 
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.units import inch
@@ -47,7 +49,7 @@ def generate_tabular_report_pdf(
     story.append(Paragraph(report_title, styles["TitleCustom"]))
     story.append(Paragraph(f"{company_name} &mdash; {project_name}", styles["SubtitleCustom"]))
     story.append(Paragraph(
-        f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} by {generated_by_name}",
+        f"Generated {datetime.now(BHUTAN_TIME).strftime('%Y-%m-%d %H:%M BTT')} by {generated_by_name}",
         styles["Tiny"],
     ))
     story.append(Spacer(1, 14))

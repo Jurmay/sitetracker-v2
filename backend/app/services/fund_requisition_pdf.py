@@ -11,7 +11,9 @@ actually move. The caller (the approval endpoint) is responsible for
 only invoking this after the status is genuinely 'approved'.
 """
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+BHUTAN_TIME = timezone(timedelta(hours=6), "BTT")  # no daylight saving
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
@@ -52,7 +54,7 @@ def generate_fund_requisition_pdf(
     story.append(Paragraph(f"{company_name} &mdash; {project_name}", styles["SubtitleCustom"]))
     story.append(Spacer(1, 4))
     story.append(Paragraph(
-        f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        f"Generated {datetime.now(BHUTAN_TIME).strftime('%Y-%m-%d %H:%M BTT')}",
         ParagraphStyle(name="Tiny", parent=styles["Body10"], fontSize=8, textColor=colors.HexColor("#888888")),
     ))
     story.append(Spacer(1, 14))
