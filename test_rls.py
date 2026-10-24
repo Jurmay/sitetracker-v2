@@ -23,6 +23,7 @@ Usage:
 
 import os
 import sys
+import httpx
 from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -163,6 +164,89 @@ def run_within_tenant_role_checks():
     check("alpha.cashier: can see all advance requisitions in project (not just own)", len(res.data) >= 1)
 
 
+# The reporting views run with their owner's rights, so table RLS doesn't
+# protect them - each view filters by project membership itself (migration
+# 20261024122329). These checks catch a view that loses that filter.
+VIEWS_WITH_PROJECT_ID = [
+    "v_evm_by_project", "v_evm_by_boq_item", "v_cashbook_running_balance",
+    "v_progress_effective", "v_subcontract_balances",
+]
+ALL_VIEWS = VIEWS_WITH_PROJECT_ID + ["v_actual_cost_by_boq_item"]
+
+
+def run_view_checks(slug: str, role: str):
+    email = f"{slug}.{role}@seedtest.local"
+    print(f"\n--- View checks as {email} ---")
+    client = login_as(email)
+    own_project_id = get_project_id(client, slug)
+
+    for view in VIEWS_WITH_PROJECT_ID:
+        res = client.table(view).select("project_id").execute()
+        leaked = [r for r in res.data if r["project_id"] != own_project_id]
+        check(f"{role}@{slug}: zero leaked rows in '{view}'", len(leaked) == 0)
+
+    try:
+        res = client.table("v_progress_effective").update({"status": "certified"}).eq(
+            "project_id", own_project_id).execute()
+        check(f"{role}@{slug}: cannot write through v_progress_effective", len(res.data) == 0)
+    except Exception:
+        check(f"{role}@{slug}: cannot write through v_progress_effective", True)
+
+
+def run_anonymous_checks():
+    print("\n--- Not logged in (public anon key only) ---")
+    anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+    for name in ["projects", "advance_requisitions", "fund_receipts"] + ALL_VIEWS:
+        try:
+            res = anon.table(name).select("*").execute()
+            check(f"anon: reads zero rows from '{name}'", len(res.data) == 0)
+        except Exception:
+            check(f"anon: reads zero rows from '{name}'", True)
+
+    try:
+        res = anon.table("v_progress_effective").update({"status": "certified"}).neq(
+            "status", "x").execute()
+        check("anon: cannot write through v_progress_effective", len(res.data) == 0)
+    except Exception:
+        check("anon: cannot write through v_progress_effective", True)
+
+
+def run_receipt_checks():
+    print("\n--- Settlement receipt storage ---")
+    bucket = "settlement-receipts"
+    alpha_project = get_project_id(login_as("alpha.admin@seedtest.local"), "alpha")
+    path = f"{alpha_project}/seed-receipt.jpg"
+
+    names = [f["name"] for f in login_as("alpha.cashier@seedtest.local").storage.from_(bucket).list(alpha_project)]
+    check("alpha.cashier: can see own project's receipt", "seed-receipt.jpg" in names)
+
+    for who in ["beta.owner", "beta.admin", "beta.cashier", "alpha.coordinator"]:
+        client = login_as(f"{who}@seedtest.local")
+        names = [f["name"] for f in client.storage.from_(bucket).list(alpha_project)]
+        check(f"{who}: cannot list alpha's receipts", "seed-receipt.jpg" not in names)
+        try:
+            client.storage.from_(bucket).create_signed_url(path, 60)
+            check(f"{who}: cannot open alpha's receipt", False)
+        except Exception:
+            check(f"{who}: cannot open alpha's receipt", True)
+
+    anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    names = [f["name"] for f in anon.storage.from_(bucket).list(alpha_project)]
+    check("anon: cannot list receipts", "seed-receipt.jpg" not in names)
+
+    public = httpx.get(f"{SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}")
+    check("receipts bucket is private (public link refused)", public.status_code != 200)
+
+    beta_coord = login_as("beta.coordinator@seedtest.local")
+    try:
+        beta_coord.storage.from_(bucket).upload(f"{alpha_project}/intruder.jpg", b"\xff\xd8\xff\xd9",
+                                                {"content-type": "image/jpeg"})
+        check("beta.coordinator: cannot upload into alpha's receipts", False)
+    except Exception:
+        check("beta.coordinator: cannot upload into alpha's receipts", True)
+
+
 if __name__ == "__main__":
     print("========================================")
     print("Cross-tenant RLS verification")
@@ -173,6 +257,13 @@ if __name__ == "__main__":
         run_cross_tenant_checks("beta", "alpha", role)
 
     run_within_tenant_role_checks()
+
+    for role in ["owner", "admin", "coordinator", "cashier", "viewer"]:
+        run_view_checks("alpha", role)
+        run_view_checks("beta", role)
+
+    run_anonymous_checks()
+    run_receipt_checks()
 
     print("\n========================================")
     print(f"RESULTS: {len(PASS)} passed, {len(FAIL)} failed")
