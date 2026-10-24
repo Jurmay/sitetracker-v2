@@ -194,6 +194,13 @@ def seed_company(slug: str, company_name: str, currency: str):
         }).execute()
         print("  Settlement verified (partial, Nu 18,000 of Nu 25,000)")
 
+    # --- Settlement receipt file (so test_rls.py can check storage access) ---
+    receipt_path = f"{project_id}/seed-receipt.jpg"
+    sb.storage.from_("settlement-receipts").upload(
+        receipt_path, b"\xff\xd8\xff\xd9", {"content-type": "image/jpeg", "upsert": "true"}
+    )
+    print("  Receipt uploaded:", receipt_path)
+
     print(f"=== {company_name} seeding complete ===")
     return {
         "company_id": company_id,

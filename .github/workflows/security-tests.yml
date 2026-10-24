@@ -1,0 +1,43 @@
+name: Security tests
+
+# Builds a throwaway Supabase from supabase/migrations, seeds two
+# companies, and checks that neither can see the other's data, that the
+# public (anon) key reads nothing, and that receipts stay private.
+on:
+  push:
+  pull_request:
+
+jobs:
+  rls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.54.11
+
+      - name: Start Supabase and apply migrations
+        run: supabase start -x studio,imgproxy,realtime,edge-runtime,logflare,vector,supavisor,mailpit,postgres-meta
+
+      - name: Export local keys
+        run: |
+          supabase status -o env | grep -E '^(API_URL|ANON_KEY|SERVICE_ROLE_KEY)=' | tr -d '"' > keys.env
+          source keys.env
+          echo "SUPABASE_URL=$API_URL" >> "$GITHUB_ENV"
+          echo "SUPABASE_ANON_KEY=$ANON_KEY" >> "$GITHUB_ENV"
+          echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install supabase==2.31.0
+
+      - name: Seed two companies
+        run: python seed.py
+
+      - name: Run security tests
+        run: python test_rls.py
