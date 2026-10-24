@@ -169,7 +169,7 @@ def run_within_tenant_role_checks():
 # 20261024122329). These checks catch a view that loses that filter.
 VIEWS_WITH_PROJECT_ID = [
     "v_evm_by_project", "v_evm_by_boq_item", "v_cashbook_running_balance",
-    "v_progress_effective", "v_subcontract_balances",
+    "v_progress_effective", "v_subcontract_balances", "v_schedule_by_boq_item",
 ]
 ALL_VIEWS = VIEWS_WITH_PROJECT_ID + ["v_actual_cost_by_boq_item", "v_portfolio_summary"]
 
@@ -204,6 +204,32 @@ def run_portfolio_checks(slug: str, role: str):
               [r["project_id"] for r in rows] == [own_project_id])
     else:
         check(f"{role}@{slug}: portfolio is empty for this role", len(rows) == 0)
+
+
+def run_schedule_checks():
+    """Schedule follows boq_items visibility, and only admins/owners set planned dates."""
+    print("\n--- Schedule ---")
+    viewer = login_as("alpha.viewer@seedtest.local")
+    rows = viewer.table("v_schedule_by_boq_item").select("boq_item_id").execute().data
+    check("alpha.viewer (no grant): schedule is empty", len(rows) == 0)
+
+    admin = login_as("alpha.admin@seedtest.local")
+    rows = admin.table("v_schedule_by_boq_item").select("boq_item_id,schedule_status,pct_complete").execute().data
+    check("alpha.admin: sees the seeded BOQ item on the schedule", len(rows) >= 1)
+    item_id = rows[0]["boq_item_id"] if rows else None
+    check("alpha.admin: Brickwork is 24% done (120 of 500)", bool(rows) and float(rows[0]["pct_complete"]) == 24.0)
+
+    if item_id:
+        coord = login_as("alpha.coordinator@seedtest.local")
+        res = coord.table("boq_items").update({"planned_end": "2099-01-01"}).eq("id", item_id).execute()
+        check("alpha.coordinator: cannot change planned dates", len(res.data) == 0)
+
+        beta_admin = login_as("beta.admin@seedtest.local")
+        res = beta_admin.table("boq_items").update({"planned_end": "2099-01-01"}).eq("id", item_id).execute()
+        check("beta.admin: cannot change alpha's planned dates", len(res.data) == 0)
+
+        res = admin.table("boq_items").update({"planned_end": "2099-01-01"}).eq("id", item_id).execute()
+        check("alpha.admin: can change planned dates", len(res.data) == 1)
 
 
 def run_anonymous_checks():
@@ -277,6 +303,7 @@ if __name__ == "__main__":
         run_portfolio_checks("alpha", role)
         run_portfolio_checks("beta", role)
 
+    run_schedule_checks()
     run_anonymous_checks()
     run_receipt_checks()
 

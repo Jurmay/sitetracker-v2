@@ -5,6 +5,7 @@ from typing import List
 from app.core.deps import get_current_user, CurrentUser
 from app.core.db_helpers import safe_execute
 from app.schemas.boq import BOQSectionOut, BOQSectionCreate, BOQItemOut, BOQItemCreate, BOQVariationCreate
+from app.schemas.schedule import PlannedDatesUpdate
 
 router = APIRouter()
 
@@ -66,6 +67,22 @@ def create_item(payload: BOQItemCreate, user: CurrentUser = Depends(get_current_
     )
     if not result.data:
         raise HTTPException(status_code=403, detail="Not permitted to add BOQ items to this project.")
+    return result.data[0]
+
+
+@router.patch("/items/{item_id}/planned-dates", response_model=BOQItemOut)
+def set_planned_dates(item_id: str, payload: PlannedDatesUpdate, user: CurrentUser = Depends(get_current_user)):
+    """
+    Sets (or clears) a BOQ item's planned start/end for the schedule.
+    RLS (boq_items_write_admin / boq_items_write_owner) limits this to
+    Admin/Company Owner; anyone else's update matches no rows.
+    """
+    result = safe_execute(
+        user.client.table("boq_items").update(payload.model_dump(mode="json")).eq("id", item_id),
+        on_denied="Not permitted to change the schedule for this BOQ item.",
+    )
+    if not result.data:
+        raise HTTPException(status_code=403, detail="Not permitted to change the schedule for this BOQ item.")
     return result.data[0]
 
 

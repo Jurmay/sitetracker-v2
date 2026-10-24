@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import projects, boq, master_roll, progress, financial, dashboard, reports, admin_users
+from app.routers import projects, boq, master_roll, progress, financial, dashboard, reports, admin_users, schedule
 
 app = FastAPI(
     title="SiteTracker v2 API",
@@ -39,6 +39,7 @@ app.include_router(financial.router, prefix="/api/financial", tags=["financial"]
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(reports.router, prefix="/api/reports", tags=["reports"])
 app.include_router(admin_users.router, prefix="/api/admin/users", tags=["admin_users"])
+app.include_router(schedule.router, prefix="/api/schedule", tags=["schedule"])
 
 
 @app.get("/health")
