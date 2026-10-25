@@ -54,3 +54,28 @@ def execute_with_rules(query, *, on_denied: str):
         if e.code == "P0001" or (e.code or "").startswith("23"):
             raise HTTPException(status_code=400, detail=e.message)
         raise HTTPException(status_code=500, detail=f"Database error: {e.message}")
+
+
+def insert_once(client, table: str, data: dict, *, on_denied: str) -> dict:
+    """
+    Inserts one row, unless a row with the same client_ref already exists
+    (a submission saved offline on a phone and sent twice), in which case
+    that existing row is returned instead. Without a client_ref this is a
+    plain insert.
+    """
+    ref = data.get("client_ref")
+    if ref:
+        existing = client.table(table).select("*").eq("client_ref", ref).execute().data
+        if existing:
+            return existing[0]
+    try:
+        result = client.table(table).insert(data).execute()
+    except APIError as e:
+        if e.code == "23505" and ref and "client_ref" in (e.message or ""):
+            return client.table(table).select("*").eq("client_ref", ref).execute().data[0]
+        if e.code == "42501":
+            raise HTTPException(status_code=403, detail=on_denied)
+        raise HTTPException(status_code=500, detail=f"Database error: {e.message}")
+    if not result.data:
+        raise HTTPException(status_code=403, detail=on_denied)
+    return result.data[0]

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
-from app.core.db_helpers import safe_execute
+from app.core.db_helpers import safe_execute, insert_once
 from app.schemas.progress import (
     ProgressReportOut, ProgressReportCreate, ProgressCorrectionOut, ProgressCorrectionCreate,
 )
@@ -45,10 +45,7 @@ def submit_progress_report(
         "to this BOQ item's scope, the measured quantity is less than a previous "
         "cumulative entry, or you do not have Site Coordinator access on this project."
     )
-    result = safe_execute(user.client.table("progress_reports").insert(data), on_denied=denial_msg)
-    if not result.data:
-        raise HTTPException(status_code=403, detail=denial_msg)
-    return result.data[0]
+    return insert_once(user.client, "progress_reports", data, on_denied=denial_msg)
 
 
 @router.post("/corrections", response_model=ProgressCorrectionOut)
