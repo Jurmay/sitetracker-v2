@@ -80,6 +80,7 @@ def run_cross_tenant_checks(slug: str, other_slug: str, role: str):
         "advance_settlements", "progress_reports", "master_roll_entries",
         "labourers", "subcontracts", "fund_receipts", "fund_requisitions",
         "ledger_heads", "leave_periods", "zones",
+        "purchase_orders", "goods_receipts",
     ]
 
     for table in tables_to_check:
@@ -170,6 +171,7 @@ def run_within_tenant_role_checks():
 VIEWS_WITH_PROJECT_ID = [
     "v_evm_by_project", "v_evm_by_boq_item", "v_cashbook_running_balance",
     "v_progress_effective", "v_subcontract_balances", "v_schedule_by_boq_item",
+    "v_purchase_orders", "v_purchase_order_lines",
 ]
 ALL_VIEWS = VIEWS_WITH_PROJECT_ID + ["v_actual_cost_by_boq_item", "v_portfolio_summary"]
 
@@ -232,11 +234,82 @@ def run_schedule_checks():
         check("alpha.admin: can change planned dates", len(res.data) == 1)
 
 
+def _raises(fn, needle=""):
+    try:
+        fn()
+        return False
+    except Exception as e:
+        return needle.lower() in str(e).lower()
+
+
+def run_purchasing_checks():
+    """Suppliers, POs and deliveries: who can do what, and the delivery limits."""
+    print("\n--- Purchasing ---")
+    admin = login_as("alpha.admin@seedtest.local")
+    coord = login_as("alpha.coordinator@seedtest.local")
+    project_id = get_project_id(admin, "alpha")
+
+    for slug in ["alpha", "beta"]:
+        other = "beta" if slug == "alpha" else "alpha"
+        client = login_as(f"{slug}.admin@seedtest.local")
+        names = [s["name"] for s in client.table("suppliers").select("name").execute().data]
+        check(f"{slug}.admin: sees no supplier of {other}", all(other.lower() not in n.lower() for n in names))
+
+    viewer = login_as("alpha.viewer@seedtest.local")
+    check("alpha.viewer (no grant): sees no purchase orders",
+          len(viewer.table("v_purchase_orders").select("po_id").execute().data) == 0)
+    check("alpha.cashier: sees the purchase order",
+          len(login_as("alpha.cashier@seedtest.local").table("v_purchase_orders").select("po_id").execute().data) == 1)
+
+    po = coord.table("v_purchase_orders").select("po_id,status").execute().data
+    check("alpha.coordinator: sees the issued purchase order", len(po) == 1 and po[0]["status"] == "issued")
+    po_id = po[0]["po_id"] if po else None
+    line = coord.table("v_purchase_order_lines").select("po_line_id").eq("po_id", po_id).execute().data if po_id else []
+    line_id = line[0]["po_line_id"] if line else None
+    supplier_id = admin.table("suppliers").select("id").execute().data[0]["id"]
+
+    check("alpha.coordinator: cannot create a purchase order", _raises(lambda: coord.rpc("fn_create_purchase_order", {
+        "p_project_id": project_id, "p_supplier_id": supplier_id,
+        "p_lines": [{"description": "x", "unit": "u", "quantity": 1, "rate": 1}]}).execute()))
+    res = coord.table("purchase_orders").update({"status": "cancelled"}).eq("id", po_id).execute()
+    check("alpha.coordinator: cannot cancel a purchase order", len(res.data) == 0)
+
+    beta_admin = login_as("beta.admin@seedtest.local")
+    beta_project = get_project_id(beta_admin, "beta")
+    check("beta.admin: cannot order from alpha's supplier", _raises(lambda: beta_admin.rpc("fn_create_purchase_order", {
+        "p_project_id": beta_project, "p_supplier_id": supplier_id,
+        "p_lines": [{"description": "x", "unit": "u", "quantity": 1, "rate": 1}]}).execute(), "supplier list"))
+    check("beta.admin: cannot record a delivery on alpha's PO", _raises(lambda: beta_admin.rpc("fn_record_goods_receipt", {
+        "p_po_id": po_id, "p_lines": [{"po_line_id": line_id, "quantity_received": 1}]}).execute(), "not found"))
+
+    coord.rpc("fn_record_goods_receipt", {
+        "p_po_id": po_id, "p_delivery_note_no": "DN-1",
+        "p_lines": [{"po_line_id": line_id, "quantity_received": 120, "quantity_rejected": 5}]}).execute()
+    status = coord.table("v_purchase_orders").select("status,pct_received").eq("po_id", po_id).execute().data[0]
+    check("alpha.coordinator: delivery of 120/200 -> partially_received, 60%",
+          status["status"] == "partially_received" and float(status["pct_received"]) == 60.0)
+    check("alpha.coordinator: delivering more than ordered is refused", _raises(lambda: coord.rpc("fn_record_goods_receipt", {
+        "p_po_id": po_id, "p_lines": [{"po_line_id": line_id, "quantity_received": 81}]}).execute(), "exceed"))
+    check("alpha.admin: cannot cancel once goods are received", _raises(
+        lambda: admin.table("purchase_orders").update({"status": "cancelled"}).eq("id", po_id).execute(), "cannot go from"))
+
+    new_po = admin.rpc("fn_create_purchase_order", {
+        "p_project_id": project_id, "p_supplier_id": supplier_id,
+        "p_lines": [{"description": "Sand", "unit": "cum", "quantity": 10, "rate": 1800}]}).execute().data
+    numbered = admin.table("purchase_orders").select("po_number,status").eq("id", new_po).execute().data[0]
+    check("alpha.admin: new PO is a draft numbered PO-0002",
+          numbered["po_number"] == "PO-0002" and numbered["status"] == "draft")
+    admin.table("purchase_orders").update({"status": "issued"}).eq("id", new_po).execute()
+    check("alpha.admin: lines are locked once the PO is issued", _raises(
+        lambda: admin.table("purchase_order_lines").update({"quantity": 99}).eq("po_id", new_po).execute(), "draft"))
+
+
 def run_anonymous_checks():
     print("\n--- Not logged in (public anon key only) ---")
     anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-    for name in ["projects", "advance_requisitions", "fund_receipts"] + ALL_VIEWS:
+    for name in ["projects", "advance_requisitions", "fund_receipts", "suppliers", "purchase_orders",
+                 "purchase_order_lines", "goods_receipts", "goods_receipt_lines"] + ALL_VIEWS:
         try:
             res = anon.table(name).select("*").execute()
             check(f"anon: reads zero rows from '{name}'", len(res.data) == 0)
@@ -304,6 +377,7 @@ if __name__ == "__main__":
         run_portfolio_checks("beta", role)
 
     run_schedule_checks()
+    run_purchasing_checks()
     run_anonymous_checks()
     run_receipt_checks()
 
