@@ -37,3 +37,20 @@ def safe_execute(query, *, on_denied: str = "You are not permitted to perform th
         if e.code == "42501":
             raise HTTPException(status_code=403, detail=on_denied)
         raise HTTPException(status_code=500, detail=f"Database error: {e.message}")
+
+
+def execute_with_rules(query, *, on_denied: str):
+    """
+    Like safe_execute, but a rule raised by a database trigger or function
+    (P0001, e.g. "Receiving 81 bag would exceed the 200 bag ordered") or a
+    constraint violation (23xxx) is the user's mistake, so it comes back as
+    a 400 carrying the database's own message.
+    """
+    try:
+        return query.execute()
+    except APIError as e:
+        if e.code == "42501":
+            raise HTTPException(status_code=403, detail=on_denied)
+        if e.code == "P0001" or (e.code or "").startswith("23"):
+            raise HTTPException(status_code=400, detail=e.message)
+        raise HTTPException(status_code=500, detail=f"Database error: {e.message}")

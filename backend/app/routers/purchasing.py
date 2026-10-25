@@ -11,9 +11,9 @@ clean HTTP errors.
 """
 from fastapi import APIRouter, Depends, HTTPException, Response
 from typing import List
-from postgrest.exceptions import APIError
 
 from app.core.deps import get_current_user, CurrentUser
+from app.core.db_helpers import execute_with_rules as _run
 from app.schemas.purchasing import (
     SupplierOut, SupplierCreate, PurchaseOrderCreate, PurchaseOrderOut, PurchaseOrderLineOut,
     PurchaseOrderDetailOut, CancelPurchaseOrder, GoodsReceiptCreate,
@@ -21,23 +21,6 @@ from app.schemas.purchasing import (
 from app.services.purchase_order_pdf import generate_purchase_order_pdf
 
 router = APIRouter()
-
-
-def _run(query, *, on_denied: str):
-    """
-    Like safe_execute, but a rule raised by a trigger or function
-    (P0001, e.g. "Receiving 81 bag would exceed the 200 bag ordered")
-    or a constraint violation (23xxx) is the user's mistake, so it comes
-    back as a 400 carrying the database's own message.
-    """
-    try:
-        return query.execute()
-    except APIError as e:
-        if e.code == "42501":
-            raise HTTPException(status_code=403, detail=on_denied)
-        if e.code == "P0001" or (e.code or "").startswith("23"):
-            raise HTTPException(status_code=400, detail=e.message)
-        raise HTTPException(status_code=500, detail=f"Database error: {e.message}")
 
 
 def _get_order(user: CurrentUser, po_id: str) -> dict:

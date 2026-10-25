@@ -304,6 +304,38 @@ def run_purchasing_checks():
         lambda: admin.table("purchase_order_lines").update({"quantity": 99}).eq("po_id", new_po).execute(), "draft"))
 
 
+def run_project_creation_checks():
+    """Only a Company Owner creates projects (from a won tender's BOQ), always in their own company."""
+    print("\n--- Creating a project from a BOQ ---")
+    boq = [{"name": "BOQ 01", "items": [
+        {"description": "Excavation", "unit": "cum", "quantity": 100, "rate": 127.42},
+        {"description": "OHS measures", "unit": "LS", "quantity": 1, "rate": 0}]}]
+    args = {"p_name": "Imported tender job", "p_sections": boq, "p_tender_ref": "NIT-TEST-1"}
+
+    owner = login_as("alpha.owner@seedtest.local")
+    check("alpha.owner: may create projects", owner.rpc("fn_can_create_project", {}).execute().data is True)
+    new_id = owner.rpc("fn_create_project_from_boq", args).execute().data
+    project = owner.table("projects").select("name,total_budget,tender_ref").eq("id", new_id).execute().data
+    check("alpha.owner: new project has budget = BOQ total and the NIT",
+          len(project) == 1 and float(project[0]["total_budget"]) == 12742.0 and project[0]["tender_ref"] == "NIT-TEST-1")
+    items = owner.table("v_schedule_by_boq_item").select("boq_item_id").eq("project_id", new_id).execute().data
+    check("alpha.owner: both BOQ lines are on the new project's schedule", len(items) == 2)
+
+    for who in ["alpha.admin", "alpha.coordinator", "alpha.cashier", "alpha.viewer"]:
+        client = login_as(f"{who}@seedtest.local")
+        check(f"{who}: cannot create projects", _raises(lambda: client.rpc("fn_create_project_from_boq", args).execute()))
+        check(f"{who}: does not see the new project",
+              len(client.table("projects").select("id").eq("id", new_id).execute().data) == 0)
+
+    beta_owner = login_as("beta.owner@seedtest.local")
+    check("beta.owner: does not see alpha's new project",
+          len(beta_owner.table("projects").select("id").eq("id", new_id).execute().data) == 0
+          and len(beta_owner.table("boq_sections").select("id").eq("project_id", new_id).execute().data) == 0)
+
+    anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    check("anon: cannot create projects", _raises(lambda: anon.rpc("fn_create_project_from_boq", args).execute()))
+
+
 def run_anonymous_checks():
     print("\n--- Not logged in (public anon key only) ---")
     anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -378,6 +410,7 @@ if __name__ == "__main__":
 
     run_schedule_checks()
     run_purchasing_checks()
+    run_project_creation_checks()
     run_anonymous_checks()
     run_receipt_checks()
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from datetime import date, datetime
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,7 @@ class ProjectOut(BaseModel):
     total_budget: float
     currency: str
     status: str
+    tender_ref: Optional[str] = None
 
 
 class ProjectCreate(BaseModel):
@@ -69,3 +70,25 @@ class BOQVariationCreate(BaseModel):
     qty_delta: float = 0
     rate_delta: float = 0
     reason: str
+
+
+class ImportedBoqItem(BaseModel):
+    description: str = Field(min_length=1)
+    unit: str = Field(min_length=1)
+    quantity: float = Field(ge=0)
+    rate: float = Field(ge=0)
+
+
+class ImportedBoqSection(BaseModel):
+    name: str = Field(min_length=1)
+    items: List[ImportedBoqItem] = Field(min_length=1)
+
+
+class ProjectFromBoqCreate(BaseModel):
+    """A won tender's BOQ (as previewed from the uploaded file) plus project details."""
+    name: str = Field(min_length=1)
+    location: Optional[str] = None
+    start_date: Optional[date] = None
+    target_end_date: Optional[date] = None
+    tender_ref: Optional[str] = None
+    sections: List[ImportedBoqSection] = Field(min_length=1)
