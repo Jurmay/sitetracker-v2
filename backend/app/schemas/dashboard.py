@@ -68,6 +68,16 @@ class PortfolioProjectOut(BaseModel):
     progress_submitted_today: int
     coordinators_missing_today: List[str]
     last_progress_date: Optional[date] = None
+    schedule_items_late: int = 0
+    schedule_items_unscheduled: int = 0
+    po_open_value: float = 0
+    po_deliveries_overdue: int = 0
+    client_billed: float = 0
+    client_certified: float = 0
+    client_received: float = 0
+    client_receivable: float = 0
+    client_retention_held: float = 0
+    client_bills_awaiting_certification: int = 0
 
 
 class ReportPermissionOut(BaseModel):
