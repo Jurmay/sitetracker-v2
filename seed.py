@@ -201,6 +201,21 @@ def seed_company(slug: str, company_name: str, currency: str):
     )
     print("  Receipt uploaded:", receipt_path)
 
+    # --- Supplier and an issued purchase order (for the purchasing checks) ---
+    supplier = upsert_row("suppliers", {"company_id": company_id, "name": f"{company_name} Cement Supplier"}, {
+        "created_by": users["admin"], "phone": "17000000",
+    })
+    po = upsert_row("purchase_orders", {"project_id": project_id, "po_number": "PO-0001"}, {
+        "supplier_id": supplier["id"], "created_by": users["admin"],
+    })
+    if po["status"] == "draft":
+        upsert_row("purchase_order_lines", {"po_id": po["id"], "line_no": 1}, {
+            "description": "OPC cement 50 kg", "unit": "bag", "quantity": 200, "rate": 520,
+            "boq_item_id": boq_item_id,
+        })
+        sb.table("purchase_orders").update({"status": "issued"}).eq("id", po["id"]).execute()
+    print("  Purchase order issued: PO-0001 (200 bags cement)")
+
     print(f"=== {company_name} seeding complete ===")
     return {
         "company_id": company_id,
