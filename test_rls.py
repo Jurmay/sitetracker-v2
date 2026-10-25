@@ -353,12 +353,77 @@ def run_offline_resend_checks():
           len(coord.table("progress_reports").select("id").eq("client_ref", ref).execute().data) == 1)
 
 
+def run_billing_checks():
+    """Client running bills: who can bill, certify and record payments, and the money rules."""
+    print("\n--- Client running bills ---")
+    admin = login_as("alpha.admin@seedtest.local")
+    cashier = login_as("alpha.cashier@seedtest.local")
+    coord = login_as("alpha.coordinator@seedtest.local")
+    viewer = login_as("alpha.viewer@seedtest.local")
+    beta_admin = login_as("beta.admin@seedtest.local")
+    project_id = get_project_id(admin, "alpha")
+
+    check("alpha.coordinator: cannot start a bill", _raises(
+        lambda: coord.rpc("fn_create_client_bill", {"p_project_id": project_id}).execute()))
+    check("alpha.cashier: cannot start a bill", _raises(
+        lambda: cashier.rpc("fn_create_client_bill", {"p_project_id": project_id}).execute()))
+    check("beta.admin: cannot bill on alpha's project", _raises(
+        lambda: beta_admin.rpc("fn_create_client_bill", {"p_project_id": project_id}).execute()))
+
+    bill_id = admin.rpc("fn_create_client_bill", {"p_project_id": project_id}).execute().data
+    bill = admin.table("v_client_bills").select("*").eq("bill_id", bill_id).execute().data[0]
+    gross = float(bill["gross_amount"])
+    check("alpha.admin: RA-01 prefilled from measured brickwork, draft",
+          bill["bill_ref"] == "RA-01" and bill["status"] == "draft" and gross > 0)
+    check("alpha.admin: default terms applied (retention 10%, TDS 2%)",
+          float(bill["retention_amount"]) == round(gross * 0.10, 2) and float(bill["tds_amount"]) == round(gross * 0.02, 2)
+          and float(bill["net_amount"]) == round(gross * 0.88, 2))
+    check("alpha.admin: billing beyond the BOQ quantity is refused", _raises(
+        lambda: admin.table("client_bill_lines").update({"quantity": 501}).eq("bill_id", bill_id).execute(),
+        "more than the boq quantity"))
+
+    admin.table("client_bills").update({"status": "submitted"}).eq("id", bill_id).execute()
+    check("alpha.admin: lines are locked once submitted", _raises(
+        lambda: admin.table("client_bill_lines").update({"quantity": 1}).eq("bill_id", bill_id).execute(), "draft"))
+    check("alpha.cashier: cannot certify a bill",
+          len(cashier.table("client_bills").update({"status": "certified", "certified_amount": 1})
+              .eq("id", bill_id).execute().data) == 0)
+    admin.table("client_bills").update({"status": "certified", "certified_amount": float(bill["net_amount"])}) \
+        .eq("id", bill_id).execute()
+
+    check("beta.admin: cannot record a payment on alpha's bill", _raises(
+        lambda: beta_admin.table("client_bill_payments").insert({
+            "bill_id": bill_id, "project_id": project_id, "amount": 1,
+            "recorded_by": beta_admin.auth.get_user().user.id}).execute()))
+    me = cashier.auth.get_user().user.id
+    check("alpha.cashier: paying more than certified is refused", _raises(
+        lambda: cashier.table("client_bill_payments").insert({
+            "bill_id": bill_id, "project_id": project_id, "amount": float(bill["net_amount"]) + 1,
+            "recorded_by": me}).execute(), "more than the certified"))
+    cashier.table("client_bill_payments").insert({
+        "bill_id": bill_id, "project_id": project_id, "amount": float(bill["net_amount"]), "recorded_by": me}).execute()
+    paid = cashier.table("v_client_bills").select("status,balance_due").eq("bill_id", bill_id).execute().data[0]
+    check("alpha.cashier: full payment marks the bill paid", paid["status"] == "paid" and float(paid["balance_due"]) == 0)
+
+    check("alpha.coordinator: sees no bills", len(coord.table("v_client_bills").select("bill_id").execute().data) == 0)
+    check("alpha.viewer (no grant): sees no bills", len(viewer.table("v_client_bills").select("bill_id").execute().data) == 0)
+    check("beta.admin: sees no alpha bills or payments",
+          len(beta_admin.table("client_bills").select("id").execute().data) == 0
+          and len(beta_admin.table("client_bill_payments").select("id").execute().data) == 0)
+    row = admin.table("v_portfolio_summary").select("client_billed,client_received,client_receivable") \
+        .eq("project_id", project_id).execute().data[0]
+    check("alpha.admin: all-sites dashboard shows billed and received",
+          float(row["client_billed"]) == gross and float(row["client_received"]) == float(bill["net_amount"])
+          and float(row["client_receivable"]) == 0)
+
+
 def run_anonymous_checks():
     print("\n--- Not logged in (public anon key only) ---")
     anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
     for name in ["projects", "advance_requisitions", "fund_receipts", "suppliers", "purchase_orders",
-                 "purchase_order_lines", "goods_receipts", "goods_receipt_lines"] + ALL_VIEWS:
+                 "purchase_order_lines", "goods_receipts", "goods_receipt_lines", "client_bills",
+                 "client_bill_lines", "client_bill_deductions", "client_bill_payments", "v_client_bills"] + ALL_VIEWS:
         try:
             res = anon.table(name).select("*").execute()
             check(f"anon: reads zero rows from '{name}'", len(res.data) == 0)
@@ -429,6 +494,7 @@ if __name__ == "__main__":
     run_purchasing_checks()
     run_project_creation_checks()
     run_offline_resend_checks()
+    run_billing_checks()
     run_anonymous_checks()
     run_receipt_checks()
 
