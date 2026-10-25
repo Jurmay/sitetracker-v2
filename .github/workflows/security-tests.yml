@@ -34,7 +34,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: pip install supabase==2.31.0
+        run: pip install supabase==2.31.0 openpyxl==3.1.5
+
+      - name: Backend unit tests
+        working-directory: backend
+        env:
+          SUPABASE_URL: http://localhost
+          SUPABASE_ANON_KEY: unused
+          SUPABASE_SERVICE_ROLE_KEY: unused
+          SUPABASE_JWT_SECRET: unused
+        run: |
+          pip install -q -r requirements.txt
+          python -m unittest discover -s tests -t .
 
       - name: Seed two companies
         run: python seed.py

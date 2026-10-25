@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
-from app.schemas.boq import ProjectOut, ProjectCreate
+from app.core.db_helpers import execute_with_rules
+from app.schemas.boq import ProjectOut, ProjectCreate, ProjectFromBoqCreate
+from app.services.boq_import import parse_boq_xlsx, BoqImportError
+
+MAX_BOQ_UPLOAD_BYTES = 5 * 1024 * 1024
 
 router = APIRouter()
 
@@ -19,6 +23,52 @@ def list_my_projects(user: CurrentUser = Depends(get_current_user)):
     """
     result = user.client.table("projects").select("*").execute()
     return result.data
+
+
+@router.get("/can-create")
+def can_create_project(user: CurrentUser = Depends(get_current_user)):
+    """Whether this user may create projects (Company Owners only)."""
+    result = user.client.rpc("fn_can_create_project", {}).execute()
+    return {"allowed": bool(result.data)}
+
+
+@router.post("/import-boq")
+async def preview_boq_import(file: UploadFile = File(...), user: CurrentUser = Depends(get_current_user)):
+    """
+    Reads an uploaded BOQ spreadsheet (the tender dashboard's
+    BOQ_Pricing.xlsx) and returns its sections, items, total and warnings
+    for the owner to check. Nothing is saved; POST /from-boq creates the
+    project from what they confirm.
+    """
+    data = await file.read(MAX_BOQ_UPLOAD_BYTES + 1)
+    if len(data) > MAX_BOQ_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="That file is over 5 MB; a BOQ spreadsheet should be far smaller.")
+    try:
+        return parse_boq_xlsx(data)
+    except BoqImportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/from-boq", response_model=ProjectOut)
+def create_project_from_boq(payload: ProjectFromBoqCreate, user: CurrentUser = Depends(get_current_user)):
+    """
+    Creates the project, makes the caller its Company Owner, and loads the
+    BOQ, in one transaction (fn_create_project_from_boq). Company Owners
+    only; the project is always created in the caller's own company.
+    """
+    body = payload.model_dump(mode="json")
+    result = execute_with_rules(
+        user.client.rpc("fn_create_project_from_boq", {
+            "p_name": body["name"],
+            "p_sections": body["sections"],
+            "p_location": body["location"],
+            "p_start_date": body["start_date"],
+            "p_target_end_date": body["target_end_date"],
+            "p_tender_ref": body["tender_ref"],
+        }),
+        on_denied="Only a Company Owner can create projects.",
+    )
+    return user.client.table("projects").select("*").eq("id", result.data).execute().data[0]
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
