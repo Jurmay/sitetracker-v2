@@ -24,6 +24,7 @@ class ProgressReportCreate(BaseModel):
     date: date
     measured_quantity: float = Field(ge=0)
     notes: Optional[str] = None
+    client_ref: Optional[UUID] = None  # set by the phone; makes a resent report count once
 
 
 class ProgressCorrectionOut(BaseModel):

@@ -336,6 +336,23 @@ def run_project_creation_checks():
     check("anon: cannot create projects", _raises(lambda: anon.rpc("fn_create_project_from_boq", args).execute()))
 
 
+def run_offline_resend_checks():
+    """A progress report sent twice from a phone (same client_ref) is stored once."""
+    print("\n--- Resent offline submissions ---")
+    import uuid
+    coord = login_as("alpha.coordinator@seedtest.local")
+    project_id = get_project_id(coord, "alpha")
+    item = coord.table("boq_items").select("id").limit(1).execute().data[0]["id"]
+    ref = str(uuid.uuid4())
+    row = {"project_id": project_id, "boq_item_id": item, "coordinator_id": coord.auth.get_user().user.id,
+           "date": "2026-10-25", "measured_quantity": 130, "client_ref": ref}
+    coord.table("progress_reports").insert(row).execute()
+    check("alpha.coordinator: the same submission can't be stored twice",
+          _raises(lambda: coord.table("progress_reports").insert(row).execute(), "client_ref"))
+    check("alpha.coordinator: exactly one report with that client_ref",
+          len(coord.table("progress_reports").select("id").eq("client_ref", ref).execute().data) == 1)
+
+
 def run_anonymous_checks():
     print("\n--- Not logged in (public anon key only) ---")
     anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -411,6 +428,7 @@ if __name__ == "__main__":
     run_schedule_checks()
     run_purchasing_checks()
     run_project_creation_checks()
+    run_offline_resend_checks()
     run_anonymous_checks()
     run_receipt_checks()
 

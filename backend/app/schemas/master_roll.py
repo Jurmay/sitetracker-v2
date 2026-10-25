@@ -31,6 +31,7 @@ class LabourerCreate(BaseModel):
     labour_type: str
     labour_category_id: Optional[UUID] = None
     contracted_rate: Optional[float] = None
+    client_ref: Optional[UUID] = None  # set by the phone; makes a resent registration count once
 
     @model_validator(mode="after")
     def check_type_consistency(self):

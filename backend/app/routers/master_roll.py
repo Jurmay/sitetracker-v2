@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from app.core.deps import get_current_user, CurrentUser
-from app.core.db_helpers import safe_execute
+from app.core.db_helpers import safe_execute, insert_once
 from app.schemas.master_roll import (
     LabourerOut, LabourerCreate, MasterRollEntryOut, MasterRollEntryCreate,
 )
@@ -37,16 +37,8 @@ def register_labourer(payload: LabourerCreate, user: CurrentUser = Depends(get_c
     """
     data = payload.model_dump(mode="json", exclude_none=True)
     data["created_by"] = user.id
-    result = safe_execute(
-        user.client.table("labourers").insert(data),
-        on_denied="Not permitted to register a labourer on this project.",
-    )
-    if not result.data:
-        raise HTTPException(
-            status_code=403,
-            detail="Not permitted to register a labourer on this project.",
-        )
-    return result.data[0]
+    return insert_once(user.client, "labourers", data,
+                       on_denied="Not permitted to register a labourer on this project.")
 
 
 @router.get("/entries", response_model=List[MasterRollEntryOut])
