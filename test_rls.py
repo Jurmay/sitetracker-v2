@@ -353,6 +353,47 @@ def run_offline_resend_checks():
           len(coord.table("progress_reports").select("id").eq("client_ref", ref).execute().data) == 1)
 
 
+def run_admin_people_checks():
+    """Role changes: owner role guarded, same company only, last owner kept; People list for managers only."""
+    print("\n--- Admin: people and roles ---")
+    admin = login_as("alpha.admin@seedtest.local")
+    owner = login_as("alpha.owner@seedtest.local")
+    coord = login_as("alpha.coordinator@seedtest.local")
+    beta_admin = login_as("beta.admin@seedtest.local")
+    project_id = get_project_id(admin, "alpha")
+    admin_id = admin.auth.get_user().user.id
+    owner_id = owner.auth.get_user().user.id
+    beta_id = beta_admin.auth.get_user().user.id
+
+    check("alpha.admin: cannot make themselves Company Owner", _raises(
+        lambda: admin.table("project_roles").insert({"project_id": project_id, "user_id": admin_id,
+                                                     "role": "company_owner", "assigned_by": admin_id}).execute(),
+        "only a company owner"))
+    check("alpha.admin: cannot switch off the Company Owner", _raises(
+        lambda: admin.table("project_roles").update({"status": "disabled"})
+        .eq("project_id", project_id).eq("user_id", owner_id).eq("role", "company_owner").execute(),
+        "only a company owner"))
+    check("alpha.admin: cannot give beta's admin a role on alpha's project", _raises(
+        lambda: admin.table("project_roles").insert({"project_id": project_id, "user_id": beta_id,
+                                                     "role": "viewer", "assigned_by": admin_id}).execute(),
+        "not part of this company"))
+    check("alpha.owner: cannot switch off the last Company Owner (self)", _raises(
+        lambda: owner.table("project_roles").update({"status": "disabled"})
+        .eq("project_id", project_id).eq("user_id", owner_id).eq("role", "company_owner").execute(),
+        "at least one active company owner"))
+
+    people = admin.rpc("fn_project_members", {"p_project_id": project_id}).execute().data
+    check("alpha.admin: People list shows alpha's people only",
+          len(people) > 0 and all("beta" not in (p["email"] or "") for p in people))
+    check("alpha.coordinator: cannot see the People list", _raises(
+        lambda: coord.rpc("fn_project_members", {"p_project_id": project_id}).execute(), "only an admin"))
+    check("beta.admin: cannot see alpha's People list or activity", _raises(
+        lambda: beta_admin.rpc("fn_project_members", {"p_project_id": project_id}).execute(), "only an admin")
+        and _raises(lambda: beta_admin.rpc("fn_project_activity", {"p_project_id": project_id}).execute(), "only an admin"))
+    check("alpha.admin: can read the activity log",
+          isinstance(admin.rpc("fn_project_activity", {"p_project_id": project_id, "p_limit": 5}).execute().data, list))
+
+
 def run_anonymous_checks():
     print("\n--- Not logged in (public anon key only) ---")
     anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -429,6 +470,7 @@ if __name__ == "__main__":
     run_purchasing_checks()
     run_project_creation_checks()
     run_offline_resend_checks()
+    run_admin_people_checks()
     run_anonymous_checks()
     run_receipt_checks()
 

@@ -43,6 +43,8 @@ class AdvanceRequisitionOut(BaseModel):
     amount: float
     justification: str
     status: str
+    created_at: Optional[datetime] = None
+    requested_by_name: Optional[str] = None
 
 
 class AdvanceRequisitionCreate(BaseModel):
@@ -127,9 +129,16 @@ class FundRequisitionOut(BaseModel):
     reason: str
     status: str
     approved_by: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+    requested_by_name: Optional[str] = None
+    rejection_reason: Optional[str] = None
 
 
 class FundRequisitionCreate(BaseModel):
     project_id: UUID
     amount: float = Field(gt=0)
+    reason: str = Field(min_length=1)
+
+
+class FundRequisitionReject(BaseModel):
     reason: str = Field(min_length=1)
