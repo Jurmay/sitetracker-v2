@@ -4,15 +4,24 @@ from typing import List
 from postgrest.exceptions import APIError
 
 from app.core.deps import get_current_user, CurrentUser
-from app.core.db_helpers import safe_execute
+from app.core.db_helpers import safe_execute, execute_with_rules
 from app.schemas.financial import (
     SubcontractOut, SubcontractCreate, SubcontractBalanceOut,
     AdvanceRequisitionOut, AdvanceRequisitionCreate, RequisitionActionCreate,
     AdvanceSettlementOut, AdvanceSettlementCreate, SettlementActionCreate,
-    CashbookOut, FundRequisitionOut, FundRequisitionCreate,
+    CashbookOut, FundRequisitionOut, FundRequisitionCreate, FundRequisitionReject,
 )
 
 router = APIRouter()
+
+
+def _with_requester_names(user: CurrentUser, rows: list[dict]) -> list[dict]:
+    """Adds requested_by_name, so approvers can see who is asking."""
+    ids = sorted({r["requested_by"] for r in rows if r.get("requested_by")})
+    names = {}
+    if ids:
+        names = {p["id"]: p["name"] for p in user.client.table("profiles").select("id, name").in_("id", ids).execute().data}
+    return [{**r, "requested_by_name": names.get(r.get("requested_by"))} for r in rows]
 
 
 # ----------------------------------------------------------------
@@ -67,7 +76,7 @@ def list_advances(project_id: str, user: CurrentUser = Depends(get_current_user)
     and it's RLS doing the work, not a role check in this function.
     """
     result = user.client.table("advance_requisitions").select("*").eq("project_id", project_id).execute()
-    return result.data
+    return _with_requester_names(user, result.data)
 
 
 @router.post("/advances", response_model=AdvanceRequisitionOut)
@@ -315,7 +324,25 @@ def get_cashbook(project_id: str, user: CurrentUser = Depends(get_current_user))
 @router.get("/fund-requisitions", response_model=List[FundRequisitionOut])
 def list_fund_requisitions(project_id: str, user: CurrentUser = Depends(get_current_user)):
     result = user.client.table("fund_requisitions").select("*").eq("project_id", project_id).execute()
-    return result.data
+    return _with_requester_names(user, result.data)
+
+
+@router.post("/fund-requisitions/{fund_requisition_id}/reject", response_model=FundRequisitionOut)
+def reject_fund_requisition(fund_requisition_id: str, payload: FundRequisitionReject, user: CurrentUser = Depends(get_current_user)):
+    """
+    Admin only (RLS freq_update_admin). Only a pending requisition can be
+    rejected, and a reason is required (both enforced by trigger, which
+    also records who rejected it and when). No money moves.
+    """
+    result = execute_with_rules(
+        user.client.table("fund_requisitions")
+        .update({"status": "rejected", "rejection_reason": payload.reason.strip()})
+        .eq("id", fund_requisition_id),
+        on_denied="Only an Admin can reject fund requisitions.",
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Fund requisition not found, or you are not an Admin on this project.")
+    return _with_requester_names(user, result.data)[0]
 
 
 @router.post("/fund-requisitions", response_model=FundRequisitionOut)
