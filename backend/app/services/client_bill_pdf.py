@@ -170,3 +170,97 @@ def generate_client_bill_pdf(
                       topMargin=12 * mm, bottomMargin=12 * mm,
                       title=f"Running account bill {bill['bill_ref']}").build(story)
     return buf.getvalue()
+
+
+def generate_retention_claim_pdf(
+    *,
+    release: dict,
+    bills: list[dict],
+    earlier: list[dict],
+    company_name: str,
+    project_name: str,
+    project_location: str | None,
+    tender_ref: str | None,
+    currency: str,
+    client_name: str | None,
+    client_address: str | None,
+) -> bytes:
+    """
+    Claim for release of retention (RR-01, RR-02..): retention deducted on
+    each certified bill, what was released before, and the amount claimed.
+    """
+    buf = io.BytesIO()
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle(name="RBody", parent=styles["BodyText"], fontSize=10, leading=14)
+    small = ParagraphStyle(name="RSmall", parent=body, fontSize=8, textColor=colors.HexColor("#666666"))
+    title = ParagraphStyle(name="RTitle", parent=styles["Heading1"], fontSize=16, spaceAfter=2)
+    label = ParagraphStyle(name="RLabel", parent=body, fontName="Helvetica-Bold")
+
+    story = [
+        Paragraph(escape(company_name), ParagraphStyle(name="RCo", parent=body, fontSize=11, fontName="Helvetica-Bold")),
+        Paragraph(f"CLAIM FOR RELEASE OF RETENTION {escape(release['release_ref'])}", title),
+    ]
+    if release["status"] == "cancelled":
+        story.append(Paragraph("CANCELLED", ParagraphStyle(name="RBan", parent=body, fontSize=12,
+                                                           fontName="Helvetica-Bold", textColor=colors.HexColor("#B62F1C"))))
+    story.append(Spacer(1, 5 * mm))
+
+    def block(lines_):
+        return Paragraph("<br/>".join(escape(str(x)) for x in lines_ if x), body)
+
+    header = Table(
+        [[Paragraph("To", label), Paragraph("Work", label)],
+         [block([client_name or "-", client_address]),
+          block([project_name, project_location, tender_ref and f"Tender / contract: {tender_ref}",
+                 f"Date of claim: {_date(release['claim_date'])}", release.get("stage") and f"Stage: {release['stage']}"])]],
+        colWidths=[85 * mm, 95 * mm],
+    )
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#999999"))]))
+    story += [header, Spacer(1, 6 * mm)]
+
+    rows = [["Bill", "Certified on", f"Value of work ({currency})", f"Retention deducted ({currency})"]]
+    for b in bills:
+        rows.append([b["bill_ref"], _date(b.get("certified_date") or b.get("bill_date")),
+                     _money(b["gross_amount"]), _money(b["retention_amount"])])
+    withheld = sum(float(b["retention_amount"] or 0) for b in bills)
+    rows.append([Paragraph("<b>Total retention deducted</b>", body), "", "", _money(withheld)])
+    table = Table(rows, colWidths=[30 * mm, 35 * mm, 55 * mm, 60 * mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EDE7DC")),
+        ("GRID", (0, 0), (-1, -2), 0.4, colors.HexColor("#BBBBBB")),
+        ("LINEABOVE", (0, -1), (-1, -1), 1, colors.black), ("SPAN", (0, -1), (2, -1)),
+        ("FONTNAME", (-1, -1), (-1, -1), "Helvetica-Bold"),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story += [table, Spacer(1, 5 * mm)]
+
+    released_before = sum(float(r["amount"]) for r in earlier)
+    summary = [["Total retention deducted", _money(withheld)]]
+    for r in earlier:
+        word = "released" if r["status"] == "received" else "claimed"
+        summary.append([f"Less {r['release_ref']} {word} on {_date(r.get('received_date') or r['claim_date'])}", f"({_money(r['amount'])})"])
+    summary.append(["Retention still held", _money(withheld - released_before)])
+    summary.append([f"Amount claimed now ({currency})", _money(release["amount"])])
+    st = Table([[Paragraph(escape(a), body), b] for a, b in summary], colWidths=[120 * mm, 45 * mm], hAlign="RIGHT")
+    st.setStyle(TableStyle([("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                            ("LINEABOVE", (0, -1), (-1, -1), 1, colors.black),
+                            ("FONTNAME", (1, -1), (1, -1), "Helvetica-Bold")]))
+    story.append(KeepTogether([st]))
+
+    if release.get("notes"):
+        story += [Spacer(1, 4 * mm), Paragraph(escape(release["notes"]).replace("\n", "<br/>"), body)]
+    if release["status"] == "received":
+        story += [Spacer(1, 4 * mm), Paragraph(
+            f"Received on {_date(release.get('received_date'))}"
+            + (f", reference {escape(release['received_reference'])}" if release.get("received_reference") else "") + ".", body)]
+    if release["status"] == "cancelled":
+        story += [Spacer(1, 4 * mm), Paragraph(f"Cancelled: {escape(release.get('cancel_reason') or '')}", body)]
+
+    story += [Spacer(1, 16 * mm), Paragraph("_______________________________<br/>Contractor", body), Spacer(1, 6 * mm),
+              Paragraph(f"Generated {datetime.now(BHUTAN_TIME).strftime('%Y-%m-%d %H:%M BTT')}.", small)]
+
+    SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=15 * mm, bottomMargin=15 * mm,
+                      title=f"Retention claim {release['release_ref']}").build(story)
+    return buf.getvalue()

@@ -17,8 +17,9 @@ from app.core.db_helpers import execute_with_rules as _run
 from app.schemas.billing import (
     BillingTerms, ClientBillCreate, ClientBillUpdate, ClientBillOut, ClientBillDetailOut,
     BillLinesIn, DeductionIn, DeductionOut, PaymentIn, CertifyIn, CancelBillIn,
+    RetentionOut, RetentionClaimIn, RetentionReceivedIn,
 )
-from app.services.client_bill_pdf import generate_client_bill_pdf
+from app.services.client_bill_pdf import generate_client_bill_pdf, generate_retention_claim_pdf
 
 router = APIRouter()
 
@@ -241,4 +242,108 @@ def get_bill_pdf(bill_id: str, user: CurrentUser = Depends(get_current_user)):
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{bill["bill_ref"]}.pdf"'},
+    )
+
+
+# ----------------------------------------------------------------
+# Retention release (claiming back retention the client holds)
+# ----------------------------------------------------------------
+
+RELEASE_COLUMNS = ("id, release_no, status, amount, claim_date, stage, notes, received_date, "
+                   "received_reference, cancel_reason, project_id")
+
+
+def _release_row(r: dict) -> dict:
+    return {**r, "release_ref": f"RR-{int(r['release_no']):02d}"}
+
+
+def _get_release(user: CurrentUser, release_id: str) -> dict:
+    found = user.client.table("client_retention_releases").select(RELEASE_COLUMNS).eq("id", release_id).execute().data
+    if not found:
+        raise HTTPException(status_code=404, detail="Retention claim not found.")
+    return _release_row(found[0])
+
+
+@router.get("/retention", response_model=RetentionOut)
+def get_retention(project_id: str, user: CurrentUser = Depends(get_current_user)):
+    """What the client holds, what can still be claimed, and the claims so far."""
+    position = user.client.rpc("fn_retention_position", {"p_project_id": project_id}).execute().data
+    if not position:
+        raise HTTPException(status_code=404, detail="Project not found, or you can't see its client bills.")
+    releases = (
+        user.client.table("client_retention_releases").select(RELEASE_COLUMNS)
+        .eq("project_id", project_id).order("release_no", desc=True).execute().data
+    )
+    return {"position": position[0], "releases": [_release_row(r) for r in releases]}
+
+
+@router.post("/retention", response_model=RetentionOut)
+def claim_retention(payload: RetentionClaimIn, user: CurrentUser = Depends(get_current_user)):
+    """Admins/Owners. Never more than is still held and not already claimed (enforced by trigger)."""
+    body = payload.model_dump(mode="json", exclude_none=True)
+    _run(user.client.table("client_retention_releases").insert({**body, "created_by": user.id}), on_denied=MANAGERS_ONLY)
+    return get_retention(body["project_id"], user)
+
+
+@router.post("/retention/{release_id}/received", response_model=RetentionOut)
+def retention_received(release_id: str, payload: RetentionReceivedIn, user: CurrentUser = Depends(get_current_user)):
+    """Admins, Owners and Cashiers: the client has paid the retention back."""
+    release = _get_release(user, release_id)
+    changes = {"status": "received", "received_reference": (payload.reference or "").strip() or None}
+    if payload.received_date:
+        changes["received_date"] = payload.received_date.isoformat()
+    result = _run(
+        user.client.table("client_retention_releases").update(changes).eq("id", release_id),
+        on_denied="Only an Admin, Company Owner or Cashier can record retention as received.",
+    )
+    if not result.data:
+        raise HTTPException(status_code=403, detail="Only an Admin, Company Owner or Cashier can record retention as received.")
+    return get_retention(release["project_id"], user)
+
+
+@router.post("/retention/{release_id}/cancel", response_model=RetentionOut)
+def cancel_retention(release_id: str, payload: CancelBillIn, user: CurrentUser = Depends(get_current_user)):
+    """Admins/Owners, while the claim is open. The amount can be claimed again."""
+    release = _get_release(user, release_id)
+    _run(
+        user.client.table("client_retention_releases")
+        .update({"status": "cancelled", "cancel_reason": payload.reason.strip()}).eq("id", release_id),
+        on_denied=MANAGERS_ONLY,
+    )
+    return get_retention(release["project_id"], user)
+
+
+@router.get("/retention/{release_id}/pdf")
+def get_retention_pdf(release_id: str, user: CurrentUser = Depends(get_current_user)):
+    """The claim letter: the bills retention was deducted from, and the amount claimed."""
+    release = _get_release(user, release_id)
+    project_id = release["project_id"]
+    retention = get_retention(project_id, user)
+    bills = (
+        user.client.table("v_client_bills")
+        .select("bill_ref, bill_date, certified_date, gross_amount, retention_amount, status")
+        .eq("project_id", project_id).in_("status", ["certified", "paid"]).order("bill_no").execute().data
+    )
+    project = (
+        user.client.table("projects").select("name, location, currency, tender_ref, companies(name)")
+        .eq("id", project_id).execute().data
+    )
+    terms = user.client.table("project_settings").select("client_name, client_address").eq("project_id", project_id).execute().data
+    p = project[0] if project else {}
+    pdf_bytes = generate_retention_claim_pdf(
+        release=release,
+        bills=bills,
+        earlier=[r for r in retention["releases"] if r["release_no"] < release["release_no"] and r["status"] != "cancelled"],
+        company_name=(p.get("companies") or {}).get("name", ""),
+        project_name=p.get("name", ""),
+        project_location=p.get("location"),
+        tender_ref=p.get("tender_ref"),
+        currency=p.get("currency") or "BTN",
+        client_name=(terms[0].get("client_name") if terms else None),
+        client_address=(terms[0].get("client_address") if terms else None),
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{release["release_ref"]}.pdf"'},
     )

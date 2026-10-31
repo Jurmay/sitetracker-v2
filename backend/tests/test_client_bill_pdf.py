@@ -57,5 +57,26 @@ class ClientBillPdfTest(unittest.TestCase):
         self.assertTrue(_pdf(client_name=None, client_address=None, deductions=[], tender_ref=None).startswith(b"%PDF"))
 
 
+
+class RetentionClaimPdfTest(unittest.TestCase):
+    def test_claim_letter(self):
+        from app.services.client_bill_pdf import generate_retention_claim_pdf
+        pdf = generate_retention_claim_pdf(
+            release={"release_ref": "RR-02", "release_no": 2, "status": "claimed", "amount": 3600,
+                     "claim_date": "2026-10-31", "stage": "End of defects liability period", "notes": None},
+            bills=[{"bill_ref": "RA-01", "bill_date": "2026-10-25", "certified_date": "2026-10-26",
+                    "gross_amount": 72000, "retention_amount": 7200}],
+            earlier=[{"release_ref": "RR-01", "release_no": 1, "status": "received", "amount": 3600,
+                      "claim_date": "2026-10-28", "received_date": "2026-10-30"}],
+            company_name="Sherza & Co", project_name="Amochu restoration", project_location="Phuentsholing",
+            tender_ref="DoST/ROP/2026-2027/Mtc-12/615", currency="BTN",
+            client_name="Regional Office DoST", client_address=None,
+        )
+        text = _text(pdf)
+        self.assertIn("CLAIM FOR RELEASE OF RETENTION RR-02", text)
+        for expected in ("7,200.00", "RR-01 released", "(3,600.00)", "Retention still held", "End of defects liability period"):
+            self.assertIn(expected, text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -417,6 +417,39 @@ def run_billing_checks():
           and float(row["client_receivable"]) == 0)
 
 
+def run_retention_checks():
+    """Retention release: claim at most what is held; cashier records it received; others see nothing."""
+    print("\n--- Retention release ---")
+    admin = login_as("alpha.admin@seedtest.local")
+    cashier = login_as("alpha.cashier@seedtest.local")
+    beta_admin = login_as("beta.admin@seedtest.local")
+    project_id = get_project_id(admin, "alpha")
+    admin_id = admin.auth.get_user().user.id
+    cashier_id = cashier.auth.get_user().user.id
+
+    pos = admin.rpc("fn_retention_position", {"p_project_id": project_id}).execute().data[0]
+    held = float(pos["available"])
+    check("alpha.admin: certified RA-01 leaves retention to claim", held > 0)
+    check("alpha.cashier: cannot claim retention", _raises(
+        lambda: cashier.table("client_retention_releases").insert({
+            "project_id": project_id, "amount": 1, "created_by": cashier_id}).execute()))
+    check("alpha.admin: claiming more than held is refused", _raises(
+        lambda: admin.table("client_retention_releases").insert({
+            "project_id": project_id, "amount": held + 1, "created_by": admin_id}).execute(), "still held"))
+    claim = admin.table("client_retention_releases").insert({
+        "project_id": project_id, "amount": round(held / 2, 2), "stage": "Half on completion",
+        "created_by": admin_id}).execute().data[0]
+    check("alpha.admin: RR-01 claimed for half", claim["release_no"] == 1 and claim["status"] == "claimed")
+    cashier.table("client_retention_releases").update({"status": "received", "received_reference": "TT 1"}) \
+        .eq("id", claim["id"]).execute()
+    pos = admin.rpc("fn_retention_position", {"p_project_id": project_id}).execute().data[0]
+    check("alpha.cashier: records it received; half still held",
+          float(pos["released"]) == round(held / 2, 2) and float(pos["held"]) == round(held - round(held / 2, 2), 2))
+    check("beta.admin: sees no alpha retention claims or position",
+          len(beta_admin.table("client_retention_releases").select("id").execute().data) == 0
+          and len(beta_admin.rpc("fn_retention_position", {"p_project_id": project_id}).execute().data) == 0)
+
+
 def run_admin_people_checks():
     """Role changes: owner role guarded, same company only, last owner kept; People list for managers only."""
     print("\n--- Admin: people and roles ---")
@@ -464,7 +497,8 @@ def run_anonymous_checks():
 
     for name in ["projects", "advance_requisitions", "fund_receipts", "suppliers", "purchase_orders",
                  "purchase_order_lines", "goods_receipts", "goods_receipt_lines", "client_bills",
-                 "client_bill_lines", "client_bill_deductions", "client_bill_payments", "v_client_bills"] + ALL_VIEWS:
+                 "client_bill_lines", "client_bill_deductions", "client_bill_payments", "v_client_bills",
+                 "client_retention_releases"] + ALL_VIEWS:
         try:
             res = anon.table(name).select("*").execute()
             check(f"anon: reads zero rows from '{name}'", len(res.data) == 0)
@@ -536,6 +570,7 @@ if __name__ == "__main__":
     run_project_creation_checks()
     run_offline_resend_checks()
     run_billing_checks()
+    run_retention_checks()
     run_admin_people_checks()
     run_anonymous_checks()
     run_receipt_checks()

@@ -133,3 +133,44 @@ class CertifyIn(BaseModel):
 
 class CancelBillIn(BaseModel):
     reason: str = Field(min_length=1)
+
+
+class RetentionPosition(BaseModel):
+    """fn_retention_position: retention on certified/paid bills, and what has been claimed back."""
+    withheld: float      # deducted on certified or paid bills
+    claimed_open: float  # claimed, not yet received
+    released: float      # received back
+    held: float          # withheld - released
+    available: float     # can still be claimed
+
+
+class RetentionReleaseOut(BaseModel):
+    id: UUID
+    release_no: int
+    release_ref: str
+    status: str  # claimed | received | cancelled
+    amount: float
+    claim_date: date
+    stage: Optional[str] = None
+    notes: Optional[str] = None
+    received_date: Optional[date] = None
+    received_reference: Optional[str] = None
+    cancel_reason: Optional[str] = None
+
+
+class RetentionOut(BaseModel):
+    position: RetentionPosition
+    releases: List[RetentionReleaseOut]
+
+
+class RetentionClaimIn(BaseModel):
+    project_id: UUID
+    amount: float = Field(gt=0)
+    claim_date: Optional[date] = None
+    stage: Optional[str] = None  # e.g. "Half on completion"
+    notes: Optional[str] = None
+
+
+class RetentionReceivedIn(BaseModel):
+    received_date: Optional[date] = None
+    reference: Optional[str] = None
