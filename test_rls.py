@@ -415,6 +415,8 @@ def run_billing_checks():
     check("alpha.admin: all-sites dashboard shows billed and received",
           float(row["client_billed"]) == gross and float(row["client_received"]) == float(bill["net_amount"])
           and float(row["client_receivable"]) == 0)
+
+
 def run_admin_people_checks():
     """Role changes: owner role guarded, same company only, last owner kept; People list for managers only."""
     print("\n--- Admin: people and roles ---")
